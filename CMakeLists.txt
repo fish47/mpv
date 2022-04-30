@@ -1,9 +1,7 @@
 cmake_minimum_required(VERSION 2.8)
 
-
 option(MPV_BUILD_EMULATOR "Build project for desktop to ease debugging" FALSE)
 set(MPV_FFMPEG_LIBS_DIR "" CACHE STRING "Specfiy FFMPEG static library directory")
-
 
 set(mpv_sources)
 set(mpv_gen_files)
@@ -49,8 +47,6 @@ if (NOT MPV_BUILD_EMULATOR)
 endif()
 
 project(mpv-vita)
-
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu11")
 
 list(APPEND mpv_sources
     ## Audio
@@ -320,13 +316,18 @@ else()
         OpenGL::GL)
 
     list(APPEND mpv_compile_defs
-        GLFW_INCLUDE_ES2)
+        _GNU_SOURCE
+        GLFW_INCLUDE_ES2
+        HAVE_GLIBC_THREAD_NAME=1)
 endif()
 
 
 add_executable(${PROJECT_NAME}
     ${mpv_sources}
     ${mpv_gen_files})
+
+target_compile_options(${PROJECT_NAME} PRIVATE
+    -std=gnu11)
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     ${mpv_compile_defs})
