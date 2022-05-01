@@ -393,9 +393,6 @@ static void render_draw_texture(struct ui_context *ctx, struct ui_texture *tex,
     normalize_rect(tex_vertices, src_rect, tex->w, tex->h, 0, 0, 1, -1);
 
     glUseProgram(program->program);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, tex->ids[0]);
-
     glVertexAttribPointer(attr_draw_tex_pos_draw.pos, 2, GL_FLOAT, GL_FALSE, 0, draw_vertices);
     glEnableVertexAttribArray(attr_draw_tex_pos_draw.pos);
     glVertexAttribPointer(attr_draw_tex_pos_tex.pos, 2, GL_FLOAT, GL_FALSE, 0, tex_vertices);
