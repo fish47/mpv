@@ -1,12 +1,17 @@
 #include "emulator.h"
 #include "ui_device.h"
 #include "ui_driver.h"
-#include "common/common.h"
 #include "video/img_format.h"
 
 #include <GLES2/gl2.h>
 
-#define TEXTURE_BUFFER_SIZE     (1024 * 1024 * 4)
+#include <freetype2/ft2build.h>
+#include FT_CACHE_H
+#include FT_FREETYPE_H
+
+#define PRIV_BUFFER_SIZE        (1024 * 1024 * 4)
+
+#define TEX_FMT_INTERNAL_A8     (1000)
 
 struct gl_attr_spec {
     const char *name;
@@ -43,6 +48,20 @@ static const struct gl_tex_impl_spec tex_spec_unknown = {
     .num_planes = 0,
     .plane_specs = NULL,
     .shader_frag_source = NULL,
+};
+
+static const struct gl_tex_impl_spec tex_spec_a8 = {
+    .num_planes = 1,
+    .plane_specs = (const struct gl_tex_plane_spec[]) {
+        { 1, 1, GL_ALPHA, GL_UNSIGNED_BYTE, "u_texture" },
+    },
+    .shader_frag_source =
+        "precision mediump float;"
+        "varying vec2 v_texture_pos;"
+        "uniform sampler2D u_texture;"
+        "void main() {"
+        "    gl_FragColor = vec4(texture2D(u_texture, v_texture_pos).aaa, 1.0);"
+        "}",
 };
 
 static const struct gl_tex_impl_spec tex_spec_rgba = {
@@ -96,10 +115,47 @@ struct gl_draw_tex_program {
     GLuint uniform_textures[MP_MAX_PLANES];
 };
 
+struct gl_float_rect {
+    float x0;
+    float y0;
+    float x1;
+    float y1;
+};
+
+struct freetype_lib {
+    FT_Library lib;
+    FTC_Manager manager;
+    FTC_CMapCache cmap_cache;
+    FTC_ImageCache image_cache;
+};
+
+struct draw_font_cache_entry {
+    int font_id;
+    int font_size;
+    const char *text;
+};
+
+struct draw_font_cache {
+    int w;
+    int h;
+    GLuint tex;
+    int count;
+    struct gl_float_rect *uvs;
+    struct gl_float_rect *verts;
+    struct draw_font_cache_entry entry;
+    struct draw_font_cache *next;
+};
+
 struct priv_render {
+    void *buffer;
+    struct gl_draw_tex_program program_draw_tex_a8;
     struct gl_draw_tex_program program_draw_tex_rgba;
     struct gl_draw_tex_program program_draw_tex_yuv420;
-    void *buffer;
+
+    int font_id;
+    struct freetype_lib *ft_lib;
+    struct draw_font_cache *font_cache_reused;
+    struct draw_font_cache *font_cache_old;
 };
 
 struct ui_texture {
@@ -109,6 +165,13 @@ struct ui_texture {
     enum ui_texure_fmt fmt;
 };
 
+struct ui_font {
+    const char *font_path;
+    int font_id;
+};
+
+static void font_cache_free_all(struct draw_font_cache **head);
+
 static struct priv_render *get_priv_render(struct ui_context *ctx)
 {
     return (struct priv_render*) ctx->priv_render;
@@ -116,6 +179,9 @@ static struct priv_render *get_priv_render(struct ui_context *ctx)
 
 static const struct gl_tex_impl_spec *get_gl_tex_impl_spec(enum ui_texure_fmt fmt)
 {
+    if (fmt == TEX_FMT_INTERNAL_A8)
+        return &tex_spec_a8;
+
     switch (fmt) {
     case TEX_FMT_RGBA:
         return &tex_spec_rgba;
@@ -129,6 +195,9 @@ static const struct gl_tex_impl_spec *get_gl_tex_impl_spec(enum ui_texure_fmt fm
 
 static struct gl_draw_tex_program *get_gl_draw_tex_program(struct priv_render *priv, enum ui_texure_fmt fmt)
 {
+    if (fmt == TEX_FMT_INTERNAL_A8)
+        return &priv->program_draw_tex_a8;
+
     switch (fmt) {
     case TEX_FMT_RGBA:
         return &priv->program_draw_tex_rgba;
@@ -203,28 +272,84 @@ error:
     return false;
 }
 
+static FT_Error ftc_request_cb(FTC_FaceID face_id, FT_Library lib,
+                               FT_Pointer data, FT_Face *face)
+{
+    struct ui_font *font = (void*) face_id;
+    return FT_New_Face(lib, font->font_path, 0, face);
+}
+
+static void uninit_freetype(void *p)
+{
+    struct freetype_lib *lib = p;
+    FTC_Manager_Done(lib->manager);
+    FT_Done_FreeType(lib->lib);
+}
+
+static bool init_freetype(struct priv_render *priv)
+{
+    FT_Library lib;
+    FTC_Manager ft_manager;
+    FTC_CMapCache ft_cmap_cache;
+    FTC_ImageCache ft_image_cache;
+    if (FT_Init_FreeType(&lib) != 0)
+        goto error_lib;
+    if (FTC_Manager_New(lib, 0, 0, 0, &ftc_request_cb, NULL, &ft_manager) != 0)
+        goto error_manager;
+    if (FTC_CMapCache_New(ft_manager, &ft_cmap_cache) != 0)
+        goto error_cmap;
+    if (FTC_ImageCache_New(ft_manager, &ft_image_cache) != 0)
+        goto error_image;
+
+    struct freetype_lib *result = ta_new_ptrtype(priv, result);
+    *result = (struct freetype_lib) {
+        .lib = lib,
+        .manager = ft_manager,
+        .cmap_cache = ft_cmap_cache,
+        .image_cache = ft_image_cache,
+    };
+    ta_set_destructor(result, uninit_freetype);
+    priv->ft_lib = result;
+    return true;
+
+error_cmap:
+error_image:
+    FTC_Manager_Done(ft_manager);
+error_manager:
+    FT_Done_FreeType(lib);
+error_lib:
+    return false;
+}
+
 static bool render_init(struct ui_context *ctx)
 {
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
     struct priv_render *priv = ctx->priv_render;
     memset(priv, 0, sizeof(struct priv_render));
-    return init_program(&priv->program_draw_tex_rgba, &tex_spec_rgba)
+    return init_program(&priv->program_draw_tex_a8, &tex_spec_a8)
+        && init_program(&priv->program_draw_tex_rgba, &tex_spec_rgba)
         && init_program(&priv->program_draw_tex_yuv420, &tex_spec_yuv420)
-        && (priv->buffer = malloc(TEXTURE_BUFFER_SIZE));
+        && (priv->buffer = ta_alloc_size(priv, PRIV_BUFFER_SIZE))
+        && init_freetype(priv);
 }
 
 static void render_uninit(struct ui_context *ctx)
 {
     struct priv_render *priv = ctx->priv_render;
+    delete_program(&priv->program_draw_tex_a8);
     delete_program(&priv->program_draw_tex_rgba);
     delete_program(&priv->program_draw_tex_yuv420);
-    if (priv->buffer) {
-        free(priv->buffer);
-        priv->buffer = NULL;
-    }
 }
 
 static void render_render_start(struct ui_context *ctx)
 {
+    struct priv_render *priv = ctx->priv_render;
+    font_cache_free_all(&priv->font_cache_old);
+    priv->font_cache_old = priv->font_cache_reused;
+    priv->font_cache_reused = NULL;
+
     glViewport(0, 0, VITA_SCREEN_W, VITA_SCREEN_H);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glClearColor(0, 0, 0, 0);
@@ -232,13 +357,29 @@ static void render_render_start(struct ui_context *ctx)
 
 static void render_render_end(struct ui_context *ctx)
 {
+    struct priv_render *priv = ctx->priv_render;
+    font_cache_free_all(&priv->font_cache_old);
+
     glfwSwapBuffers(emulator_get_window(ctx));
+}
+
+static GLuint create_texture(GLsizei w, GLsizei h, GLenum fmt, GLenum type)
+{
+    GLuint tex_id;
+    glGenTextures(1, &tex_id);
+    glBindTexture(GL_TEXTURE_2D, tex_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, type, NULL);
+    return tex_id;
 }
 
 static bool render_texture_init(struct ui_context *ctx, struct ui_texture **tex,
                                 enum ui_texure_fmt fmt, int w, int h)
 {
-    struct ui_texture *new_tex = malloc(sizeof(struct ui_texture));
+    struct ui_texture *new_tex = ta_new_ptrtype(ctx, new_tex);
     new_tex->w = w;
     new_tex->h = h;
     new_tex->fmt = fmt;
@@ -248,14 +389,7 @@ static bool render_texture_init(struct ui_context *ctx, struct ui_texture **tex,
         const struct gl_tex_plane_spec *plane = spec->plane_specs + i;
         int tex_w = w / plane->div;
         int tex_h = h / plane->div;
-        GLenum *p_tex_id = new_tex->ids + i;
-        glGenTextures(1, p_tex_id);
-        glBindTexture(GL_TEXTURE_2D, *p_tex_id);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, plane->fmt, tex_w, tex_h, 0, plane->fmt, plane->type, NULL);
+        new_tex->ids[i] = create_texture(tex_w, tex_h, plane->fmt, plane->type);
     }
 
     *tex = new_tex;
@@ -267,11 +401,14 @@ static void render_texture_uninit(struct ui_context *ctx, struct ui_texture **te
     const struct gl_tex_impl_spec *spec = get_gl_tex_impl_spec((*tex)->fmt);
     if (spec->num_planes > 0)
         glDeleteTextures(spec->num_planes, (*tex)->ids);
-    *tex = NULL;
+    TA_FREEP(tex);
 }
 
-static void upload_texture_buffered(GLuint id, void *data, int w, int h, int stride, int bpp,
-                                    GLenum fmt, GLenum type, void *buffer, int capacity)
+static void upload_texture_buffered(GLuint id, void *data,
+                                    int x, int y, int w, int h,
+                                    int stride, int bpp,
+                                    GLenum fmt, GLenum type,
+                                    void *buffer, int capacity)
 {
     glBindTexture(GL_TEXTURE_2D, id);
 
@@ -291,8 +428,8 @@ static void upload_texture_buffered(GLuint id, void *data, int w, int h, int str
         }
 
         // texture upload area
-        int dst_x = col;
-        int dst_y = row;
+        int dst_x = col + x;
+        int dst_y = row + y;
         int dst_w = read_pixels;
         int dst_h = 1;
 
@@ -311,7 +448,7 @@ static void upload_texture_buffered(GLuint id, void *data, int w, int h, int str
             next += stride;
 
             // copy as many rows as we can
-            if (dst_x == 0) {
+            if (dst_x == x) {
                 int row_count = MPMIN((available_bytes / row_bytes), (h - row));
                 for (int i = 0; i < row_count; ++i) {
                     memcpy(dst_p, cur, row_bytes);
@@ -341,36 +478,119 @@ static void render_texture_upload(struct ui_context *ctx, struct ui_texture *tex
         const struct gl_tex_plane_spec *plane = spec->plane_specs + i;
         int tex_w = tex->w / plane->div;
         int tex_h = tex->h / plane->div;
-        upload_texture_buffered(tex->ids[i], data[i], tex_w, tex_h,
+        upload_texture_buffered(tex->ids[i], data[i], 0, 0, tex_w, tex_h,
                                 strides[i], plane->bpp, plane->fmt, plane->type,
-                                priv_render->buffer, TEXTURE_BUFFER_SIZE);
+                                priv_render->buffer, PRIV_BUFFER_SIZE);
     }
 }
 
-static void normalize_rect(GLfloat *out, struct mp_rect *rect, float w, float h,
-                           float dx, float dy, float sx, float sy)
+static float normalize_to_uv_xy(float xy, int wh)
 {
-    float l = rect ? rect->x0 : 0;
-    float t = rect ? rect->y0 : 0;
-    float r = rect ? rect->x1 : w;
-    float b = rect ? rect->y1 : h;
-    l = (l - dx) / w * sx;
-    t = (t - dy) / h * sy;
-    r = (r - dx) / w * sx;
-    b = (b - dy) / h * sy;
-
-    out[0] = l;
-    out[1] = t;
-    out[2] = l;
-    out[3] = b;
-    out[4] = r;
-    out[5] = t;
-    out[6] = r;
-    out[7] = b;
+    return xy /= wh;
 }
 
-static void render_draw_texture(struct ui_context *ctx, struct ui_texture *tex,
-                                struct ui_texture_draw_args *args)
+static void normalize_to_rect_uv(struct gl_float_rect *in_out, int w, int h)
+{
+    in_out->x0 = normalize_to_uv_xy(in_out->x0, w);
+    in_out->y0 = normalize_to_uv_xy(in_out->y0, h);
+    in_out->x1 = normalize_to_uv_xy(in_out->x1, w);
+    in_out->y1 = normalize_to_uv_xy(in_out->y1, h);
+}
+
+static float normalize_to_vert_x(float x)
+{
+    return (x - VITA_SCREEN_W * 0.5f) / VITA_SCREEN_W * 2.0f;
+}
+
+static float normalize_to_vert_y(float y)
+{
+    return (y - VITA_SCREEN_H * 0.5f) / VITA_SCREEN_H * -2.0f;
+}
+
+static float normalize_to_vert_offset_x(float x)
+{
+    return x / VITA_SCREEN_W * 2.0f;
+}
+
+static float normalize_to_vert_offset_y(float y)
+{
+    return y / VITA_SCREEN_H * -2.0f;
+}
+
+static void normalize_to_rect_vert(struct gl_float_rect *in_out)
+{
+    in_out->x0 = normalize_to_vert_x(in_out->x0);
+    in_out->y0 = normalize_to_vert_y(in_out->y0);
+    in_out->x1 = normalize_to_vert_x(in_out->x1);
+    in_out->y1 = normalize_to_vert_y(in_out->y1);
+}
+
+static void normalize_to_rect_from_mp_rect(struct gl_float_rect *out, struct mp_rect *rect, float w, float h)
+{
+    out->x0 = rect ? rect->x0 : 0;
+    out->y0 = rect ? rect->y0 : 0;
+    out->x1 = rect ? rect->x1 : w;
+    out->y1 = rect ? rect->y1 : h;
+}
+
+static int normalize_to_triangle_strip(float *out, int *offset, struct gl_float_rect *rect, int i, int n)
+{
+    int p = *offset;
+    int draw_count = 0;
+    if (i > 0) {
+        draw_count++;
+        out[p++] = rect->x0;
+        out[p++] = rect->y0;
+    }
+
+    draw_count += 4;
+    out[p++] = rect->x0;
+    out[p++] = rect->y0;
+    out[p++] = rect->x0;
+    out[p++] = rect->y1;
+    out[p++] = rect->x1;
+    out[p++] = rect->y0;
+    out[p++] = rect->x1;
+    out[p++] = rect->y1;
+
+    if (i + 1 < n) {
+        draw_count++;
+        out[p++] = rect->x1;
+        out[p++] = rect->y1;
+    }
+
+    *offset = p;
+    return draw_count;
+}
+
+static void normalize_to_attr_buf(void *buffer, int rect_count,
+                                  struct gl_float_rect *verts, struct gl_float_rect *uvs,
+                                  int voffset_x, int voffset_y,
+                                  float **buf_verts, float **buf_uvs, int *draw_count)
+{
+    int offset = 0;
+    *buf_uvs = buffer;
+    *draw_count = 0;
+    for (int i = 0; i < rect_count; ++i)
+        *draw_count += normalize_to_triangle_strip(*buf_uvs, &offset, &uvs[i], i, rect_count);
+
+    float norm_offset_x = normalize_to_vert_offset_x(voffset_x);
+    float norm_offset_y = normalize_to_vert_offset_y(voffset_y);
+    *buf_verts = *buf_uvs + offset;
+    offset = 0;
+    for (int i = 0; i < rect_count; ++i) {
+        struct gl_float_rect transformed = verts[i];
+        transformed.x0 += norm_offset_x;
+        transformed.y0 += norm_offset_y;
+        transformed.x1 += norm_offset_x;
+        transformed.y1 += norm_offset_y;
+        normalize_to_triangle_strip(*buf_verts, &offset, &transformed, i, rect_count);
+    }
+}
+
+static void render_draw_texture_ext(struct ui_context *ctx, struct ui_texture *tex,
+                                    struct gl_float_rect *verts, struct gl_float_rect *uvs,
+                                    int voffset_x, int voffset_y, int rect_count)
 {
     const struct gl_tex_impl_spec *spec = get_gl_tex_impl_spec(tex->fmt);
     if (!spec)
@@ -381,21 +601,18 @@ static void render_draw_texture(struct ui_context *ctx, struct ui_texture *tex,
     if (!program)
         return;
 
-    GLfloat draw_vertices[8];
-    struct mp_rect *dst_rect = args ? args->dst : NULL;
-    normalize_rect(draw_vertices, dst_rect,
-                   VITA_SCREEN_W, VITA_SCREEN_H,
-                   (VITA_SCREEN_W * 0.5f), (VITA_SCREEN_H * 0.5f),
-                   2.0f, 2.0f);
-
-    GLfloat tex_vertices[8];
-    struct mp_rect *src_rect = args ? args->src : NULL;
-    normalize_rect(tex_vertices, src_rect, tex->w, tex->h, 0, 0, 1, -1);
+    int draw_count = 0;
+    float *buf_uvs = NULL;
+    float *buf_verts = NULL;
+    normalize_to_attr_buf(priv->buffer, rect_count, verts, uvs,
+                          voffset_x, voffset_y, &buf_verts, &buf_uvs, &draw_count);
+    if (!draw_count)
+        return;
 
     glUseProgram(program->program);
-    glVertexAttribPointer(attr_draw_tex_pos_draw.pos, 2, GL_FLOAT, GL_FALSE, 0, draw_vertices);
+    glVertexAttribPointer(attr_draw_tex_pos_draw.pos, 2, GL_FLOAT, GL_FALSE, 0, buf_verts);
     glEnableVertexAttribArray(attr_draw_tex_pos_draw.pos);
-    glVertexAttribPointer(attr_draw_tex_pos_tex.pos, 2, GL_FLOAT, GL_FALSE, 0, tex_vertices);
+    glVertexAttribPointer(attr_draw_tex_pos_tex.pos, 2, GL_FLOAT, GL_FALSE, 0, buf_uvs);
     glEnableVertexAttribArray(attr_draw_tex_pos_tex.pos);
 
     for (int i = 0; i < spec->num_planes; ++i) {
@@ -404,9 +621,271 @@ static void render_draw_texture(struct ui_context *ctx, struct ui_texture *tex,
         glUniform1i(program->uniform_textures[i], i);
     }
 
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, draw_count);
 }
 
+static void render_draw_texture(struct ui_context *ctx,
+                                struct ui_texture *tex,
+                                struct ui_texture_draw_args *args)
+{
+    struct gl_float_rect uvs;
+    normalize_to_rect_from_mp_rect(&uvs, args->src, tex->w, tex->h);
+    normalize_to_rect_uv(&uvs, tex->w, tex->h);
+
+    struct gl_float_rect verts;
+    normalize_to_rect_from_mp_rect(&verts, args->dst, VITA_SCREEN_W, VITA_SCREEN_H);
+    normalize_to_rect_vert(&verts);
+
+    render_draw_texture_ext(ctx, tex, &verts, &uvs, 0, 0, 1);
+}
+
+static void font_cache_free_all(struct draw_font_cache **head)
+{
+    struct draw_font_cache *iter = *head;
+    while (iter) {
+        struct draw_font_cache *next = iter->next;
+        ta_free(iter);
+        iter = next;
+    }
+    *head = NULL;
+}
+
+static bool font_cache_entry_is_match(struct draw_font_cache_entry *lhs,
+                                      struct draw_font_cache_entry *rhs)
+{
+    return lhs->font_id == rhs->font_id
+        && lhs->font_size == rhs->font_size
+        && strcmp(lhs->text, rhs->text) == 0;
+}
+
+static struct draw_font_cache *font_cache_find(struct draw_font_cache **head,
+                                               struct draw_font_cache_entry *entry,
+                                               bool remove)
+{
+    struct draw_font_cache *iter = *head;
+    struct draw_font_cache *prev = NULL;
+    while (iter) {
+        if (font_cache_entry_is_match(&iter->entry, entry)) {
+            if (remove) {
+                struct draw_font_cache **pp_joint = prev ? &prev->next : head;
+                *pp_joint = iter->next;
+                iter->next = NULL;
+            }
+            return iter;
+        }
+        prev = iter;
+        iter = iter->next;
+    }
+    return NULL;
+}
+
+static void font_cache_iterate(struct ui_context *ctx,
+                               struct ui_font *font,
+                               struct ui_font_draw_args *args,
+                               void (*func)(FT_BitmapGlyph, void*),
+                               void *data)
+{
+    FT_Face face;
+    FTC_FaceID face_id = (FTC_FaceID) font;
+    struct priv_render *priv = ctx->priv_render;
+    if (FTC_Manager_LookupFace(priv->ft_lib->manager, face_id, &face) != 0)
+        return;
+
+    FT_Int charmap_idx = FT_Get_Charmap_Index(face->charmap);
+    if (charmap_idx < 0)
+        return;
+
+    bstr utf8_text = bstr0(args->text);
+    while (true) {
+        int codepoint = bstr_decode_utf8(utf8_text, &utf8_text);
+        if (codepoint < 0)
+            break;
+
+        FT_UInt glyph_idx = FTC_CMapCache_Lookup(priv->ft_lib->cmap_cache, face_id, charmap_idx, codepoint);
+        if (glyph_idx == 0)
+            continue;
+
+        FTC_ScalerRec scaler = {
+            .face_id = face_id,
+            .width = args->size,
+            .height = args->size,
+            .pixel = 1,
+            .x_res = 0,
+            .y_res = 0,
+        };
+        FT_Glyph glyph;
+        FT_ULong flags = FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL;
+        if (FTC_ImageCache_LookupScaler(priv->ft_lib->image_cache, &scaler, flags, glyph_idx, &glyph, NULL) != 0)
+            continue;
+        if (glyph->format != FT_GLYPH_FORMAT_BITMAP)
+            continue;
+
+        FT_BitmapGlyph casted = (void*) glyph;
+        if (casted->bitmap.pixel_mode != FT_PIXEL_MODE_GRAY)
+            continue;
+
+        func(casted, data);
+    }
+}
+
+struct cb_args_get_size {
+    int w;
+    int h;
+    int count;
+};
+
+static void font_cache_cb_get_size(FT_BitmapGlyph glyph, void *p)
+{
+    struct cb_args_get_size *args = p;
+    ++args->count;
+    args->w += glyph->bitmap.width;
+    args->h = MPMAX(args->h, (int) glyph->bitmap.rows);
+}
+
+struct cb_args_build_text {
+    struct ui_context *ctx;
+    struct gl_float_rect *uvs;
+    struct gl_float_rect *verts;
+    GLuint tex_id;
+    int tex_w;
+    int tex_h;
+
+    int index;
+    int tex_offset;
+    int vert_offset;
+};
+
+static void font_cache_cb_build_text(FT_BitmapGlyph glyph, void *p)
+{
+    struct cb_args_build_text *args = p;
+    struct priv_render *priv = args->ctx->priv_render;
+    int glyph_w = glyph->bitmap.width;
+    int glyph_h = glyph->bitmap.rows;
+    upload_texture_buffered(args->tex_id, glyph->bitmap.buffer,
+                            args->tex_offset, 0, glyph_w, glyph_h, glyph->bitmap.pitch, 1,
+                            GL_ALPHA, GL_UNSIGNED_BYTE, priv->buffer, PRIV_BUFFER_SIZE);
+
+    struct gl_float_rect *uv = &args->uvs[args->index];
+    uv->x0 = args->tex_offset;
+    uv->y0 = 0;
+    uv->x1 = uv->x0 + glyph_w;
+    uv->y1 = uv->y0 + glyph_h;
+
+    struct gl_float_rect *vert = &args->verts[args->index];
+    vert->x0 = args->vert_offset + glyph->left;
+    vert->y0 = -glyph->top;
+    vert->x1 = vert->x0 + glyph_w;
+    vert->y1 = vert->y0 + glyph_h;
+
+    args->index++;
+    args->tex_offset += glyph_w;
+    args->vert_offset += (glyph->root.advance.x >> 16);
+    normalize_to_rect_uv(uv, args->tex_w, args->tex_h);
+    normalize_to_rect_vert(vert);
+}
+
+static void font_cache_destroy(void *p)
+{
+    struct draw_font_cache *cache = p;
+    glDeleteTextures(1, &cache->tex);
+}
+
+static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
+                                                 struct ui_font *font,
+                                                 struct ui_font_draw_args *args)
+{
+    struct draw_font_cache_entry entry = {
+        .font_id = font->font_id,
+        .font_size = args->size,
+        .text = args->text,
+    };
+
+    // reuse from old cache
+    struct priv_render *priv = ctx->priv_render;
+    struct draw_font_cache *cache1 = font_cache_find(&priv->font_cache_old, &entry, true);
+    if (cache1) {
+        cache1->next = priv->font_cache_reused;
+        priv->font_cache_reused = cache1;
+        return cache1;
+    }
+
+    // maybe a duplicated draw text call
+    struct draw_font_cache *cache2 = font_cache_find(&priv->font_cache_reused, &entry, false);
+    if (cache2)
+        return cache2;
+
+    // calculate text texture size
+    struct cb_args_get_size args_get_size = {0};
+    font_cache_iterate(ctx, font, args, font_cache_cb_get_size, &args_get_size);
+    if (!args_get_size.w || !args_get_size.h)
+        return NULL;
+
+    // calculate glyph draw position
+    struct cb_args_build_text args_build_text = {
+        .ctx = ctx,
+        .uvs = ta_new_array(NULL, struct gl_float_rect, args_get_size.count),
+        .verts = ta_new_array(NULL, struct gl_float_rect, args_get_size.count),
+        .tex_id = create_texture(args_get_size.w, args_get_size.h, GL_ALPHA, GL_UNSIGNED_BYTE),
+        .tex_w = args_get_size.w,
+        .tex_h = args_get_size.h,
+        .index = 0,
+        .tex_offset = 0,
+        .vert_offset = 0,
+    };
+    font_cache_iterate(ctx, font, args, font_cache_cb_build_text, &args_build_text);
+
+    struct draw_font_cache *cache3 = ta_new_ptrtype(priv, cache3);
+    ta_set_destructor(cache3, font_cache_destroy);
+    *cache3 = (struct draw_font_cache) {
+        .w = args_get_size.w,
+        .h = args_get_size.h,
+        .tex = args_build_text.tex_id,
+        .uvs = ta_steal(cache3, args_build_text.uvs),
+        .verts = ta_steal(cache3, args_build_text.verts),
+        .count = args_get_size.count,
+        .entry = {
+            .font_id = font->font_id,
+            .font_size = args->size,
+            .text = ta_strdup(cache3, args->text),
+        },
+        .next = priv->font_cache_reused,
+    };
+    priv->font_cache_reused = cache3;
+    return cache3;
+}
+
+static bool render_font_init(struct ui_context *ctx, struct ui_font **font, const char *path)
+{
+    struct priv_render *priv = ctx->priv_render;
+    struct ui_font *result = ta_new_ptrtype(ctx, result);
+    *result = (struct ui_font) {
+        .font_id = ++priv->font_id,
+        .font_path = ta_strdup(result, path),
+    };
+    *font = result;
+    return true;
+}
+
+static void render_font_uninit(struct ui_context *ctx, struct ui_font **font)
+{
+    TA_FREEP(font);
+}
+
+static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
+                             struct ui_font_draw_args *args)
+{
+    struct draw_font_cache *cache = font_cache_ensure(ctx, font, args);
+    if (!cache)
+        return;
+
+    struct ui_texture tex = {
+        .fmt = TEX_FMT_INTERNAL_A8,
+        .w = cache->w,
+        .h = cache->h,
+        .ids = { cache->tex },
+    };
+    render_draw_texture_ext(ctx, &tex, cache->verts, cache->uvs, args->x, args->y, cache->count);
+}
 
 const struct ui_render_driver ui_render_driver_vita = {
     .priv_size = sizeof(struct priv_render),
@@ -421,5 +900,9 @@ const struct ui_render_driver ui_render_driver_vita = {
     .texture_uninit = render_texture_uninit,
     .texture_upload = render_texture_upload,
 
+    .font_init = render_font_init,
+    .font_uninit = render_font_uninit,
+
+    .draw_font = render_draw_font,
     .draw_texture = render_draw_texture,
 };

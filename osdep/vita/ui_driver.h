@@ -2,7 +2,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <common/common.h>
 
+struct ui_font;
 struct ui_texture;
 struct ui_context;
 
@@ -10,6 +12,13 @@ enum ui_texure_fmt {
     TEX_FMT_UNKNOWN,
     TEX_FMT_RGBA,
     TEX_FMT_YUV420,
+};
+
+struct ui_font_draw_args {
+    const char *text;
+    int size;
+    int x;
+    int y;
 };
 
 struct ui_texture_draw_args {
@@ -41,6 +50,11 @@ struct ui_render_driver {
     void (*texture_upload)(struct ui_context *ctx, struct ui_texture *tex,
                            void **data, int *strides, int planes);
 
+    bool (*font_init)(struct ui_context *ctx, struct ui_font **font, const char *path);
+    void (*font_uninit)(struct ui_context *ctx, struct ui_font **font);
+
+    void (*draw_font)(struct ui_context *ctx, struct ui_font *font,
+                      struct ui_font_draw_args *args);
     void (*draw_texture)(struct ui_context *ctx, struct ui_texture *tex,
                          struct ui_texture_draw_args *args);
 };

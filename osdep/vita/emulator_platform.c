@@ -1,6 +1,7 @@
 #include "emulator.h"
 #include "ui_driver.h"
 #include "ui_device.h"
+#include "ui_panel.h"
 #include "audio/out/internal.h"
 
 extern const struct ao_driver audio_out_alsa;
