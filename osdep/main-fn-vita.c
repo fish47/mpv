@@ -109,10 +109,14 @@ static void ui_context_destroy(void *p)
     struct ui_context_internal *priv = ctx->priv_context;
     pthread_mutex_destroy(&priv->lock);
     pthread_cond_destroy(&priv->wakeup);
-    if (ctx->priv_render)
+    if (ctx->priv_render) {
         ui_render_driver_vita.uninit(ctx);
-    if (ctx->priv_platform)
+        TA_FREEP(&ctx->priv_render);
+    }
+    if (ctx->priv_platform) {
         ui_platform_driver_vita.uninit(ctx);
+        TA_FREEP(&ctx->priv_platform);
+    }
 }
 
 static struct ui_context *ui_context_new()
@@ -128,16 +132,12 @@ static struct ui_context *ui_context_new()
     pthread_cond_init(&priv->wakeup, NULL);
 
     ctx->priv_platform = talloc_zero_size(ctx, ui_platform_driver_vita.priv_size);
-    if (!ui_platform_driver_vita.init(ctx)) {
-        ctx->priv_platform = NULL;
+    if (!ui_platform_driver_vita.init(ctx))
         goto error;
-    }
 
     ctx->priv_render = talloc_zero_size(ctx, ui_render_driver_vita.priv_size);
-    if (!ui_render_driver_vita.init(ctx)) {
-        ctx->priv_render = NULL;
+    if (!ui_render_driver_vita.init(ctx))
         goto error;
-    }
 
     return ctx;
 
@@ -149,7 +149,10 @@ error:
 static void handle_panel_events(struct ui_context *ctx)
 {
     const struct ui_panel *panel = get_top_panel(ctx);
-    if (panel)
+    if (!panel)
+        return;
+
+    if (panel->on_poll)
         panel->on_poll(ctx);
 }
 
