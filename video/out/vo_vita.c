@@ -336,7 +336,7 @@ static mp_dispatch_fn get_render_act_fn(enum render_act act)
 const struct vo_driver video_out_vita = {
     .description = "Vita video output",
     .priv_size = sizeof(struct priv_vo),
-    .name = "Vita",
+    .name = "vita",
     .preinit = preinit,
     .query_format = query_format,
     .reconfig = reconfig,

@@ -8,6 +8,7 @@ set(mpv_gen_files)
 set(mpv_include_dirs)
 set(mpv_link_libs)
 set(mpv_compile_defs)
+set(mpv_compile_flags)
 
 set(mpv_gen_dir ${CMAKE_CURRENT_BINARY_DIR}/generated_files)
 
@@ -19,7 +20,7 @@ function(_generate_source _out_var _abs_out_path _abs_script_path)
     list(APPEND _dep_file_paths ${_abs_script_path})
     foreach(_arg IN LISTS ARGN)
         set(_abs_arg_path ${_cwd}/${_arg})
-        if (EXISTS ${_abs_arg_path})
+        if(EXISTS ${_abs_arg_path})
             list(APPEND _dep_file_paths ${_abs_arg_path})
         endif()
     endforeach()
@@ -36,7 +37,7 @@ endfunction()
 
 
 # apply vitasdk toolchain setup
-if (NOT MPV_BUILD_EMULATOR)
+if(NOT MPV_BUILD_EMULATOR)
     if(NOT DEFINED ENV{VITASDK})
         message(FATAL_ERROR "Please define VITASDK to point to your SDK path!")
     endif()
@@ -211,6 +212,7 @@ list(APPEND mpv_sources
     ta/ta_utils.c
 
     ## Vita
+    audio/out/ao_vita.c
     video/out/vo_vita.c
     sub/osd_dummy.c
     input/ipc-dummy.c
@@ -239,7 +241,7 @@ _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/ebml_types.h
     --generate-header)
 
 # ffmpeg depedencies
-if (EXISTS ${MPV_FFMPEG_LIBS_DIR})
+if(EXISTS ${MPV_FFMPEG_LIBS_DIR})
     set(_pkg_ffmpeg_inc_dirs
         ${MPV_FFMPEG_LIBS_DIR}/include)
     set(_pkg_ffmpeg_libs
@@ -281,37 +283,42 @@ endif()
 pkg_check_modules(_pkg_ass REQUIRED libass>=0.12.2)
 
 
-if (BUILD_VITA)
+if(BUILD_VITA)
     list(APPEND mpv_sources
+        osdep/vita/vita_audio.c
         osdep/vita/vita_render.c
         osdep/vita/vita_platform.c)
 
     list(APPEND mpv_link_libs
-		vita2d
+        vita2d
         SceGxm_stub
         SceCtrl_stub
+        SceAudio_stub
         ScePower_stub
         SceAppMgr_stub
         SceDisplay_stub
         SceSysmodule_stub
         SceCommonDialog_stub)
+
+    list(APPEND mpv_compile_flags
+        -fno-optimize-sibling-calls)
 else()
     set(OpenGL_GL_PREFERENCE GLVND)
-    find_package(ALSA REQUIRED)
+    find_package(OpenAL REQUIRED)
     find_package(OpenGL REQUIRED)
     pkg_check_modules(_pkg_glfw REQUIRED glfw3)
 
     list(APPEND mpv_sources
-        audio/out/ao_alsa.c
+        osdep/vita/emulator_audio.c
         osdep/vita/emulator_render.c
         osdep/vita/emulator_platform.c)
 
     list(APPEND mpv_include_dirs
-        ${ALSA_INCLUDE_DIRS}
+        ${OPENAL_INCLUDE_DIR}
         ${_pkg_glfw_INCLUDE_DIRS})
 
     list(APPEND mpv_link_libs
-        ${ALSA_LIBRARIES}
+        ${OPENAL_LIBRARY}
         ${_pkg_glfw_LIBRARIES}
         OpenGL::GL)
 
@@ -327,7 +334,8 @@ add_executable(${PROJECT_NAME}
     ${mpv_gen_files})
 
 target_compile_options(${PROJECT_NAME} PRIVATE
-    -std=gnu11)
+    -std=gnu11
+    ${mpv_compile_flags})
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     ${mpv_compile_defs})
@@ -347,7 +355,7 @@ target_link_libraries(${PROJECT_NAME}
     -pthread
     m)
 
-if (BUILD_VITA)
+if(BUILD_VITA)
     set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d ATTRIBUTE2=12")
     vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME})
     vita_create_vpk(${PROJECT_NAME}.vpk "MPV000001" ${PROJECT_NAME}.self

@@ -35,6 +35,13 @@ struct ui_platform_driver {
     uint32_t (*poll_keys)(struct ui_context *ctx);
 };
 
+struct ui_audio_driver {
+    int buffer_count;
+    bool (*init)(void **ctx, int samples, int freq, int channels);
+    void (*uninit)(void **ctx);
+    int (*output)(void *ctx, void *buff);
+};
+
 struct ui_render_driver {
     int priv_size;
 
@@ -60,4 +67,5 @@ struct ui_render_driver {
 };
 
 extern const struct ui_platform_driver ui_platform_driver_vita;
+extern const struct ui_audio_driver ui_audio_driver_vita;
 extern const struct ui_render_driver ui_render_driver_vita;

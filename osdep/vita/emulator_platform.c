@@ -2,10 +2,6 @@
 #include "ui_driver.h"
 #include "ui_device.h"
 #include "ui_panel.h"
-#include "audio/out/internal.h"
-
-extern const struct ao_driver audio_out_alsa;
-struct ao_driver audio_out_vita;
 
 struct key_map_item {
     int glfw_key_code;
@@ -64,9 +60,6 @@ static void on_window_close(GLFWwindow *window)
 
 static bool platform_init(struct ui_context *ctx)
 {
-    // do not bother with audio output implementation, just reuse it
-    audio_out_vita = audio_out_alsa;
-
     if (!glfwInit())
         return false;
 

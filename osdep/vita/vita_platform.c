@@ -8,7 +8,6 @@
 #include <psp2/kernel/processmgr.h>
 
 extern const struct ao_driver audio_out_null;
-struct ao_driver audio_out_vita;
 
 // special hack to increase available heap memory
 // https://github.com/bvschaik/julius/blob/master/src/platform/vita/vita.c#L21
@@ -19,7 +18,6 @@ struct priv_platform {};
 
 static bool platform_init(struct ui_context *ctx)
 {
-    audio_out_vita = audio_out_null;
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
     scePowerSetArmClockFrequency(444);
     scePowerSetBusClockFrequency(222);
