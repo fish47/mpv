@@ -39,3 +39,4 @@ void ui_panel_player_set_vo_data(struct ui_context *ctx, void *data);
 void ui_panel_player_set_vo_fns(struct ui_context *ctx, const struct ui_panel_player_vo_fns *fns);
 
 extern const struct ui_panel ui_panel_player;
+extern const struct ui_panel ui_panel_files;

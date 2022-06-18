@@ -224,6 +224,7 @@ list(APPEND mpv_sources
 
     ## Vita UI
     osdep/vita/ui_panel_player.c
+    osdep/vita/ui_panel_files.c
 )
 
 
