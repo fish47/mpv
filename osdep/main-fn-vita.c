@@ -248,7 +248,7 @@ static void main_loop(struct ui_context *ctx)
     if (!ctx)
         return;
 
-    ui_panel_common_push(ctx, &ui_panel_player, new_player_params(ctx));
+    ui_panel_common_push(ctx, &ui_panel_files, NULL);
     while (true) {
         // poll and run pending async jobs
         handle_panel_events(ctx);
