@@ -45,15 +45,21 @@ static bool do_init_texture(struct ui_texture **tex, int w, int h, SceGxmTexture
     return true;
 }
 
+static int get_aligned_size(int size, int align)
+{
+    // alignment should be power of 2
+    return (size + align - 1) & ~(align - 1);
+}
+
 static bool render_texture_init(struct ui_context *ctx, struct ui_texture **tex,
                                 enum ui_texure_fmt fmt, int w, int h)
 {
     *tex = NULL;
     switch (fmt) {
     case TEX_FMT_RGBA:
-        return do_init_texture(tex, w, h, SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_RGBA);
+        return do_init_texture(tex, get_aligned_size(w, 8), h, SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_RGBA);
     case TEX_FMT_YUV420:
-        return do_init_texture(tex, w, h, SCE_GXM_TEXTURE_FORMAT_YUV420P3_CSC0);
+        return do_init_texture(tex, get_aligned_size(w, 16), h, SCE_GXM_TEXTURE_FORMAT_YUV420P3_CSC0);
     case TEX_FMT_UNKNOWN:
         return false;
     }
