@@ -26,6 +26,12 @@ struct ui_texture_draw_args {
     struct mp_rect *dst;
 };
 
+struct ui_triangle_draw_args {
+    struct mp_rect *rects;
+    unsigned int color;
+    int count;
+};
+
 struct ui_platform_driver {
     int priv_size;
     bool (*init)(struct ui_context *ctx);
@@ -64,6 +70,7 @@ struct ui_render_driver {
                       struct ui_font_draw_args *args);
     void (*draw_texture)(struct ui_context *ctx, struct ui_texture *tex,
                          struct ui_texture_draw_args *args);
+    void (*draw_rectangle)(struct ui_context *ctx, struct ui_triangle_draw_args *args);
 };
 
 extern const struct ui_platform_driver ui_platform_driver_vita;

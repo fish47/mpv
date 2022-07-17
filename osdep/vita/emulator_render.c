@@ -18,7 +18,12 @@ struct gl_attr_spec {
     int pos;
 };
 
-static const char *const shader_vert_source =
+struct gl_uniform_spec {
+    const char *name;
+    int *output;
+};
+
+static const char *const shader_source_vert_texture =
     "attribute vec4 a_draw_pos;"
     "attribute vec2 a_texture_pos;"
     "varying vec2 v_texture_pos;"
@@ -29,6 +34,23 @@ static const char *const shader_vert_source =
 
 static const struct gl_attr_spec attr_draw_tex_pos_draw = { .name = "a_draw_pos", .pos = 0, };
 static const struct gl_attr_spec attr_draw_tex_pos_tex = { .name = "a_texture_pos", .pos = 1, };
+
+static const char *const shader_source_vert_triangle =
+    "attribute vec4 a_draw_pos;"
+    "void main() {"
+    "    gl_Position = a_draw_pos;"
+    "}";
+
+static const struct gl_attr_spec attr_draw_triangle_pos = { .name = "a_draw_pos", .pos = 0 };
+
+static const char *const shader_source_frag_triangle =
+    "precision mediump float;"
+    "uniform vec4 u_color;"
+    "void main() {"
+    "    gl_FragColor = u_color;"
+    "}";
+
+static const char *uniform_draw_triangle_color = "u_color";
 
 struct gl_tex_plane_spec {
     int bpp;
@@ -41,13 +63,13 @@ struct gl_tex_plane_spec {
 struct gl_tex_impl_spec {
     int num_planes;
     const struct gl_tex_plane_spec *plane_specs;
-    const char *shader_frag_source;
+    const char *shader_source_frag;
 };
 
 static const struct gl_tex_impl_spec tex_spec_unknown = {
     .num_planes = 0,
     .plane_specs = NULL,
-    .shader_frag_source = NULL,
+    .shader_source_frag = NULL,
 };
 
 static const struct gl_tex_impl_spec tex_spec_a8 = {
@@ -55,7 +77,7 @@ static const struct gl_tex_impl_spec tex_spec_a8 = {
     .plane_specs = (const struct gl_tex_plane_spec[]) {
         { 1, 1, GL_ALPHA, GL_UNSIGNED_BYTE, "u_texture" },
     },
-    .shader_frag_source =
+    .shader_source_frag =
         "precision mediump float;"
         "varying vec2 v_texture_pos;"
         "uniform sampler2D u_texture;"
@@ -69,7 +91,7 @@ static const struct gl_tex_impl_spec tex_spec_rgba = {
     .plane_specs = (const struct gl_tex_plane_spec[]) {
         { 4, 1, GL_RGBA, GL_UNSIGNED_BYTE, "u_texture" },
     },
-    .shader_frag_source =
+    .shader_source_frag =
         "precision mediump float;"
         "varying vec2 v_texture_pos;"
         "uniform sampler2D u_texture;"
@@ -85,7 +107,7 @@ static const struct gl_tex_impl_spec tex_spec_yuv420 = {
         { 1, 2, GL_ALPHA, GL_UNSIGNED_BYTE, "u_texture_u" },
         { 1, 2, GL_ALPHA, GL_UNSIGNED_BYTE, "u_texture_v" },
     },
-    .shader_frag_source =
+    .shader_source_frag =
         "precision mediump float;"
         "varying vec2 v_texture_pos;"
         "uniform sampler2D u_texture_y;"
@@ -108,11 +130,20 @@ static const struct gl_tex_impl_spec tex_spec_yuv420 = {
         "}",
 };
 
-struct gl_draw_tex_program {
+struct gl_program_data {
     GLuint program;
     GLuint shader_vert;
     GLuint shader_frag;
-    GLuint uniform_textures[MP_MAX_PLANES];
+};
+
+struct gl_program_draw_tex {
+    struct gl_program_data program_data;
+    GLint uniform_textures[MP_MAX_PLANES];
+};
+
+struct gl_program_draw_triangle {
+    struct gl_program_data program_data;
+    GLint uniform_color;
 };
 
 struct gl_float_rect {
@@ -148,9 +179,10 @@ struct draw_font_cache {
 
 struct priv_render {
     void *buffer;
-    struct gl_draw_tex_program program_draw_tex_a8;
-    struct gl_draw_tex_program program_draw_tex_rgba;
-    struct gl_draw_tex_program program_draw_tex_yuv420;
+    struct gl_program_draw_tex program_draw_tex_a8;
+    struct gl_program_draw_tex program_draw_tex_rgba;
+    struct gl_program_draw_tex program_draw_tex_yuv420;
+    struct gl_program_draw_triangle program_draw_triangle;
 
     int font_id;
     struct freetype_lib *ft_lib;
@@ -193,7 +225,7 @@ static const struct gl_tex_impl_spec *get_gl_tex_impl_spec(enum ui_texure_fmt fm
     return &tex_spec_unknown;
 }
 
-static struct gl_draw_tex_program *get_gl_draw_tex_program(struct priv_render *priv, enum ui_texure_fmt fmt)
+static struct gl_program_draw_tex *get_gl_program_draw_tex(struct priv_render *priv, enum ui_texure_fmt fmt)
 {
     if (fmt == TEX_FMT_INTERNAL_A8)
         return &priv->program_draw_tex_a8;
@@ -209,7 +241,7 @@ static struct gl_draw_tex_program *get_gl_draw_tex_program(struct priv_render *p
     return NULL;
 }
 
-static void delete_program(struct gl_draw_tex_program *program)
+static void delete_program(struct gl_program_data *program)
 {
     if (program->program) {
         glDeleteProgram(program->program);
@@ -242,19 +274,23 @@ static bool load_shader(const char *source, GLenum type, GLuint *out_shader)
     return true;
 }
 
-static bool init_program(struct gl_draw_tex_program *program, const struct gl_tex_impl_spec *spec)
+static bool init_program(struct gl_program_data *program,
+                         const char *vert_shader, const char *frag_shader,
+                         const struct gl_attr_spec **attrs,
+                         const struct gl_uniform_spec *uniforms,
+                         int uniform_count)
 {
     bool succeed = true;
-    succeed &= load_shader(shader_vert_source, GL_VERTEX_SHADER, &program->shader_vert);
-    succeed &= load_shader(spec->shader_frag_source, GL_FRAGMENT_SHADER, &program->shader_frag);
+    succeed &= load_shader(vert_shader, GL_VERTEX_SHADER, &program->shader_vert);
+    succeed &= load_shader(frag_shader, GL_FRAGMENT_SHADER, &program->shader_frag);
     if (!succeed)
         goto error;
 
     program->program = glCreateProgram();
     glAttachShader(program->program, program->shader_vert);
     glAttachShader(program->program, program->shader_frag);
-    glBindAttribLocation(program->program, attr_draw_tex_pos_draw.pos, attr_draw_tex_pos_draw.name);
-    glBindAttribLocation(program->program, attr_draw_tex_pos_tex.pos, attr_draw_tex_pos_tex.name);
+    for (int i = 0; attrs[i]; ++i)
+        glBindAttribLocation(program->program, attrs[i]->pos, attrs[i]->name);
     glLinkProgram(program->program);
 
     GLint linked = 0;
@@ -262,14 +298,42 @@ static bool init_program(struct gl_draw_tex_program *program, const struct gl_te
     if (!linked)
         goto error;
 
-    for (int i = 0; i < spec->num_planes; ++i)
-        program->uniform_textures[i] = glGetUniformLocation(program->program, spec->plane_specs[i].name);
-
+    for (int i = 0; i < uniform_count; ++i) {
+        GLint uniform = glGetUniformLocation(program->program, uniforms[i].name);
+        if (uniform == -1)
+            goto error;
+        *(uniforms[i].output) = uniform;
+    }
     return true;
 
 error:
     delete_program(program);
     return false;
+}
+
+static bool init_program_tex(struct gl_program_draw_tex *program, const struct gl_tex_impl_spec *spec)
+{
+    struct gl_uniform_spec tex_specs[MP_MAX_PLANES];
+    for (int i = 0; i < spec->num_planes; ++i) {
+        tex_specs[i].name = spec->plane_specs[i].name;
+        tex_specs[i].output = &program->uniform_textures[i];
+    }
+
+    const struct gl_attr_spec *attrs[] = { &attr_draw_tex_pos_draw, &attr_draw_tex_pos_tex, NULL };
+    return init_program(&program->program_data,
+                        shader_source_vert_texture, spec->shader_source_frag,
+                        attrs, tex_specs, spec->num_planes);
+}
+
+static bool init_program_triangle(struct gl_program_draw_triangle *program)
+{
+    const struct gl_attr_spec *attrs[] = { &attr_draw_triangle_pos, NULL };
+    const struct gl_uniform_spec uniforms[] = {
+        { .name = uniform_draw_triangle_color, .output = &program->uniform_color },
+    };
+    return init_program(&program->program_data,
+                        shader_source_vert_triangle, shader_source_frag_triangle,
+                        attrs, uniforms, 1);
 }
 
 static FT_Error ftc_request_cb(FTC_FaceID face_id, FT_Library lib,
@@ -323,14 +387,18 @@ error_lib:
 
 static bool render_init(struct ui_context *ctx)
 {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
     struct priv_render *priv = ctx->priv_render;
     memset(priv, 0, sizeof(struct priv_render));
-    return init_program(&priv->program_draw_tex_a8, &tex_spec_a8)
-        && init_program(&priv->program_draw_tex_rgba, &tex_spec_rgba)
-        && init_program(&priv->program_draw_tex_yuv420, &tex_spec_yuv420)
+    return init_program_tex(&priv->program_draw_tex_a8, &tex_spec_a8)
+        && init_program_tex(&priv->program_draw_tex_rgba, &tex_spec_rgba)
+        && init_program_tex(&priv->program_draw_tex_yuv420, &tex_spec_yuv420)
+        && init_program_triangle(&priv->program_draw_triangle)
         && (priv->buffer = ta_alloc_size(priv, PRIV_BUFFER_SIZE))
         && init_freetype(priv);
 }
@@ -338,9 +406,10 @@ static bool render_init(struct ui_context *ctx)
 static void render_uninit(struct ui_context *ctx)
 {
     struct priv_render *priv = ctx->priv_render;
-    delete_program(&priv->program_draw_tex_a8);
-    delete_program(&priv->program_draw_tex_rgba);
-    delete_program(&priv->program_draw_tex_yuv420);
+    delete_program(&priv->program_draw_tex_a8.program_data);
+    delete_program(&priv->program_draw_tex_rgba.program_data);
+    delete_program(&priv->program_draw_tex_yuv420.program_data);
+    delete_program(&priv->program_draw_triangle.program_data);
 }
 
 static void render_render_start(struct ui_context *ctx)
@@ -517,6 +586,16 @@ static float normalize_to_vert_offset_y(float y)
     return y / VITA_SCREEN_H * -2.0f;
 }
 
+static void *normalize_to_vec4_color(float *base, unsigned int color)
+{
+    // same as vita2d's color define
+    base[0] = (float) ((color >> 24) & 0xff) / 0xff;
+    base[1] = (float) ((color >> 16) & 0xff) / 0xff;
+    base[2] = (float) ((color >> 8) & 0xff) / 0xff;
+    base[3] = (float) ((color >> 0) & 0xff) / 0xff;
+    return base + 4;
+}
+
 static void normalize_to_rect_vert(struct gl_float_rect *in_out)
 {
     in_out->x0 = normalize_to_vert_x(in_out->x0);
@@ -597,7 +676,7 @@ static void render_draw_texture_ext(struct ui_context *ctx, struct ui_texture *t
         return;
 
     struct priv_render *priv = get_priv_render(ctx);
-    struct gl_draw_tex_program *program = get_gl_draw_tex_program(priv, tex->fmt);
+    struct gl_program_draw_tex *program = get_gl_program_draw_tex(priv, tex->fmt);
     if (!program)
         return;
 
@@ -609,7 +688,7 @@ static void render_draw_texture_ext(struct ui_context *ctx, struct ui_texture *t
     if (!draw_count)
         return;
 
-    glUseProgram(program->program);
+    glUseProgram(program->program_data.program);
     glVertexAttribPointer(attr_draw_tex_pos_draw.pos, 2, GL_FLOAT, GL_FALSE, 0, buf_verts);
     glEnableVertexAttribArray(attr_draw_tex_pos_draw.pos);
     glVertexAttribPointer(attr_draw_tex_pos_tex.pos, 2, GL_FLOAT, GL_FALSE, 0, buf_uvs);
@@ -887,6 +966,39 @@ static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
     render_draw_texture_ext(ctx, &tex, cache->verts, cache->uvs, args->x, args->y, cache->count);
 }
 
+static void render_draw_rectangle(struct ui_context *ctx, struct ui_triangle_draw_args *args)
+{
+    struct priv_render *priv = get_priv_render(ctx);
+    struct gl_program_draw_triangle *program = &priv->program_draw_triangle;
+
+    int draw_count = 0;
+    int buf_offset = 0;
+    float *buf_verts = priv->buffer;
+    for (int i = 0; i < args->count; ++i) {
+        struct mp_rect *origin = &args->rects[i];
+        struct gl_float_rect normalized = {
+            .x0 = origin->x0,
+            .y0 = origin->y0,
+            .x1 = origin->x1,
+            .y1 = origin->y1,
+        };
+        normalize_to_rect_vert(&normalized);
+        draw_count += normalize_to_triangle_strip(buf_verts, &buf_offset, &normalized, i, args->count);
+    }
+
+    if (!draw_count)
+        return;
+
+    float *buf_color = buf_verts + buf_offset;
+    normalize_to_vec4_color(buf_color, args->color);
+
+    glUseProgram(program->program_data.program);
+    glVertexAttribPointer(attr_draw_triangle_pos.pos, 2, GL_FLOAT, GL_FALSE, 0, buf_verts);
+    glEnableVertexAttribArray(attr_draw_triangle_pos.pos);
+    glUniform4fv(program->uniform_color, 1, buf_color);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, draw_count);
+}
+
 const struct ui_render_driver ui_render_driver_vita = {
     .priv_size = sizeof(struct priv_render),
 
@@ -905,4 +1017,5 @@ const struct ui_render_driver ui_render_driver_vita = {
 
     .draw_font = render_draw_font,
     .draw_texture = render_draw_texture,
+    .draw_rectangle = render_draw_rectangle,
 };
