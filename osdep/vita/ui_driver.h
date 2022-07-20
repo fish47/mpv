@@ -19,6 +19,7 @@ struct ui_font_draw_args {
     int size;
     int x;
     int y;
+    unsigned int color;
 };
 
 struct ui_texture_draw_args {

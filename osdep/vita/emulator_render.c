@@ -81,8 +81,9 @@ static const struct gl_tex_impl_spec tex_spec_a8 = {
         "precision mediump float;"
         "varying vec2 v_texture_pos;"
         "uniform sampler2D u_texture;"
+        "uniform vec4 u_tint_color;"
         "void main() {"
-        "    gl_FragColor = vec4(texture2D(u_texture, v_texture_pos).aaa, 1.0);"
+        "    gl_FragColor = texture2D(u_texture, v_texture_pos).a * u_tint_color;"
         "}",
 };
 
@@ -95,8 +96,9 @@ static const struct gl_tex_impl_spec tex_spec_rgba = {
         "precision mediump float;"
         "varying vec2 v_texture_pos;"
         "uniform sampler2D u_texture;"
+        "uniform vec4 u_tint_color;"
         "void main() {"
-        "    gl_FragColor = texture2D(u_texture, v_texture_pos);"
+        "    gl_FragColor = texture2D(u_texture, v_texture_pos) * u_tint_color;"
         "}",
 };
 
@@ -113,6 +115,7 @@ static const struct gl_tex_impl_spec tex_spec_yuv420 = {
         "uniform sampler2D u_texture_y;"
         "uniform sampler2D u_texture_u;"
         "uniform sampler2D u_texture_v;"
+        "uniform vec4 u_tint_color;"
         "const vec3 c_yuv_offset = vec3(-0.0627451017, -0.501960814, -0.501960814);"
         "const mat3 c_yuv_matrix = mat3("
         "    1.1644,  1.1644,   1.1644,"
@@ -126,9 +129,11 @@ static const struct gl_tex_impl_spec tex_spec_yuv420 = {
         "        texture2D(u_texture_v, v_texture_pos).a"
         "    );"
         "    lowp vec3 rgb = c_yuv_matrix * (yuv + c_yuv_offset);"
-        "    gl_FragColor = vec4(rgb, 1);"
+        "    gl_FragColor = vec4(rgb, 1) * u_tint_color;"
         "}",
 };
+
+static const char *uniform_draw_tex_tint_color = "u_tint_color";
 
 struct gl_program_data {
     GLuint program;
@@ -139,6 +144,7 @@ struct gl_program_data {
 struct gl_program_draw_tex {
     struct gl_program_data program_data;
     GLint uniform_textures[MP_MAX_PLANES];
+    GLint uniform_tint_color;
 };
 
 struct gl_program_draw_triangle {
@@ -313,16 +319,23 @@ error:
 
 static bool init_program_tex(struct gl_program_draw_tex *program, const struct gl_tex_impl_spec *spec)
 {
-    struct gl_uniform_spec tex_specs[MP_MAX_PLANES];
+    int idx = 0;
+    struct gl_uniform_spec uniforms[1 + MP_MAX_PLANES];
+    uniforms[idx++] = (struct gl_uniform_spec) {
+        .name = uniform_draw_tex_tint_color,
+        .output = &program->uniform_tint_color
+    };
     for (int i = 0; i < spec->num_planes; ++i) {
-        tex_specs[i].name = spec->plane_specs[i].name;
-        tex_specs[i].output = &program->uniform_textures[i];
+        uniforms[idx++] = (struct gl_uniform_spec) {
+            .name = spec->plane_specs[i].name,
+            .output = &program->uniform_textures[i]
+        };
     }
 
     const struct gl_attr_spec *attrs[] = { &attr_draw_tex_pos_draw, &attr_draw_tex_pos_tex, NULL };
     return init_program(&program->program_data,
                         shader_source_vert_texture, spec->shader_source_frag,
-                        attrs, tex_specs, spec->num_planes);
+                        attrs, uniforms, idx);
 }
 
 static bool init_program_triangle(struct gl_program_draw_triangle *program)
@@ -669,7 +682,7 @@ static void normalize_to_attr_buf(void *buffer, int rect_count,
 
 static void render_draw_texture_ext(struct ui_context *ctx, struct ui_texture *tex,
                                     struct gl_float_rect *verts, struct gl_float_rect *uvs,
-                                    int voffset_x, int voffset_y, int rect_count)
+                                    int tint, int voffset_x, int voffset_y, int rect_count)
 {
     const struct gl_tex_impl_spec *spec = get_gl_tex_impl_spec(tex->fmt);
     if (!spec)
@@ -700,6 +713,10 @@ static void render_draw_texture_ext(struct ui_context *ctx, struct ui_texture *t
         glUniform1i(program->uniform_textures[i], i);
     }
 
+    float tint_color[4];
+    normalize_to_vec4_color(tint_color, tint);
+    glUniform4fv(program->uniform_tint_color, 1, tint_color);
+
     glDrawArrays(GL_TRIANGLE_STRIP, 0, draw_count);
 }
 
@@ -715,7 +732,7 @@ static void render_draw_texture(struct ui_context *ctx,
     normalize_to_rect_from_mp_rect(&verts, args->dst, VITA_SCREEN_W, VITA_SCREEN_H);
     normalize_to_rect_vert(&verts);
 
-    render_draw_texture_ext(ctx, tex, &verts, &uvs, 0, 0, 1);
+    render_draw_texture_ext(ctx, tex, &verts, &uvs, -1, 0, 0, 1);
 }
 
 static void font_cache_free_all(struct draw_font_cache **head)
@@ -963,7 +980,7 @@ static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
         .h = cache->h,
         .ids = { cache->tex },
     };
-    render_draw_texture_ext(ctx, &tex, cache->verts, cache->uvs, args->x, args->y, cache->count);
+    render_draw_texture_ext(ctx, &tex, cache->verts, cache->uvs, args->color, args->x, args->y, cache->count);
 }
 
 static void render_draw_rectangle(struct ui_context *ctx, struct ui_triangle_draw_args *args)
