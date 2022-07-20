@@ -255,7 +255,6 @@ if(EXISTS ${MPV_FFMPEG_LIBS_DIR})
         z
         mp3lame)
 else()
-    include(FindPkgConfig)
     pkg_check_modules(_pkg_avutil REQUIRED libavutil>=56.12.100)
     pkg_check_modules(_pkg_avcodec REQUIRED libavcodec>=58.12.100)
     pkg_check_modules(_pkg_avformat REQUIRED libavformat>=58.9.100)
@@ -306,7 +305,7 @@ else()
     set(OpenGL_GL_PREFERENCE GLVND)
     find_package(OpenAL REQUIRED)
     find_package(OpenGL REQUIRED)
-    pkg_check_modules(_pkg_glfw REQUIRED glfw3)
+    find_package(glfw3 REQUIRED)
 
     list(APPEND mpv_sources
         osdep/vita/emulator_audio.c
@@ -315,12 +314,12 @@ else()
 
     list(APPEND mpv_include_dirs
         ${OPENAL_INCLUDE_DIR}
-        ${_pkg_glfw_INCLUDE_DIRS})
+        ${OPENGL_INCLUDE_DIR})
 
     list(APPEND mpv_link_libs
         ${OPENAL_LIBRARY}
-        ${_pkg_glfw_LIBRARIES}
-        OpenGL::GL)
+        ${OPENGL_LIBRARIES}
+        glfw)
 
     list(APPEND mpv_compile_defs
         _GNU_SOURCE

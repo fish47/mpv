@@ -1,5 +1,4 @@
 #include "ui_driver.h"
-#include "osdep/timer.h"
 
 #include <al.h>
 #include <alc.h>

@@ -3,8 +3,6 @@
 #include "ui_driver.h"
 #include "video/img_format.h"
 
-#include <GLES2/gl2.h>
-
 #include <freetype2/ft2build.h>
 #include FT_CACHE_H
 #include FT_FREETYPE_H
@@ -319,14 +317,13 @@ error:
 
 static bool init_program_tex(struct gl_program_draw_tex *program, const struct gl_tex_impl_spec *spec)
 {
-    int idx = 0;
-    struct gl_uniform_spec uniforms[1 + MP_MAX_PLANES];
-    uniforms[idx++] = (struct gl_uniform_spec) {
-        .name = uniform_draw_tex_tint_color,
-        .output = &program->uniform_tint_color
+    struct gl_uniform_spec uniforms[1 + MP_MAX_PLANES] = {
+        { .name = uniform_draw_tex_tint_color, .output = &program->uniform_tint_color },
     };
+
+    int count = 1;
     for (int i = 0; i < spec->num_planes; ++i) {
-        uniforms[idx++] = (struct gl_uniform_spec) {
+        uniforms[count++] = (struct gl_uniform_spec) {
             .name = spec->plane_specs[i].name,
             .output = &program->uniform_textures[i]
         };
@@ -335,7 +332,7 @@ static bool init_program_tex(struct gl_program_draw_tex *program, const struct g
     const struct gl_attr_spec *attrs[] = { &attr_draw_tex_pos_draw, &attr_draw_tex_pos_tex, NULL };
     return init_program(&program->program_data,
                         shader_source_vert_texture, spec->shader_source_frag,
-                        attrs, uniforms, idx);
+                        attrs, uniforms, count);
 }
 
 static bool init_program_triangle(struct gl_program_draw_triangle *program)
@@ -625,9 +622,9 @@ static void normalize_to_rect_from_mp_rect(struct gl_float_rect *out, struct mp_
     out->y1 = rect ? rect->y1 : h;
 }
 
-static int normalize_to_triangle_strip(float *out, int *offset, struct gl_float_rect *rect, int i, int n)
+static void *normalize_to_triangle_strip(float *out, struct gl_float_rect *rect, int i, int n, int *out_draw_count)
 {
-    int p = *offset;
+    int p = 0;
     int draw_count = 0;
     if (i > 0) {
         draw_count++;
@@ -651,33 +648,43 @@ static int normalize_to_triangle_strip(float *out, int *offset, struct gl_float_
         out[p++] = rect->y1;
     }
 
-    *offset = p;
-    return draw_count;
+    if (out_draw_count)
+        *out_draw_count += draw_count;
+
+    return out + p;
 }
 
-static void normalize_to_attr_buf(void *buffer, int rect_count,
-                                  struct gl_float_rect *verts, struct gl_float_rect *uvs,
-                                  int voffset_x, int voffset_y,
-                                  float **buf_verts, float **buf_uvs, int *draw_count)
+static void *normalize_to_attr_buf(void *buffer, int rect_count,
+                                   struct gl_float_rect *verts, struct gl_float_rect *uvs,
+                                   int voffset_x, int voffset_y,
+                                   float **out_verts, float **out_uvs, int *out_draw_count)
 {
-    int offset = 0;
-    *buf_uvs = buffer;
-    *draw_count = 0;
-    for (int i = 0; i < rect_count; ++i)
-        *draw_count += normalize_to_triangle_strip(*buf_uvs, &offset, &uvs[i], i, rect_count);
-
+    float *buf_cur = buffer;
+    float *base_verts = buf_cur;
     float norm_offset_x = normalize_to_vert_offset_x(voffset_x);
     float norm_offset_y = normalize_to_vert_offset_y(voffset_y);
-    *buf_verts = *buf_uvs + offset;
-    offset = 0;
     for (int i = 0; i < rect_count; ++i) {
         struct gl_float_rect transformed = verts[i];
         transformed.x0 += norm_offset_x;
         transformed.y0 += norm_offset_y;
         transformed.x1 += norm_offset_x;
         transformed.y1 += norm_offset_y;
-        normalize_to_triangle_strip(*buf_verts, &offset, &transformed, i, rect_count);
+        buf_cur = normalize_to_triangle_strip(buf_cur, &transformed, i, rect_count, NULL);
     }
+
+    int draw_count = 0;
+    float *base_uvs = buf_cur;
+    for (int i = 0; i < rect_count; ++i)
+        buf_cur = normalize_to_triangle_strip(buf_cur, &uvs[i], i, rect_count, &draw_count);
+
+    if (out_verts)
+        *out_verts = base_verts;
+    if (out_uvs)
+        *out_uvs = base_uvs;
+    if (out_draw_count)
+        *out_draw_count = draw_count;
+
+    return buf_cur;
 }
 
 static void render_draw_texture_ext(struct ui_context *ctx, struct ui_texture *tex,
@@ -989,8 +996,8 @@ static void render_draw_rectangle(struct ui_context *ctx, struct ui_triangle_dra
     struct gl_program_draw_triangle *program = &priv->program_draw_triangle;
 
     int draw_count = 0;
-    int buf_offset = 0;
-    float *buf_verts = priv->buffer;
+    float *buf_cur = priv->buffer;
+    float *base_verts = buf_cur;
     for (int i = 0; i < args->count; ++i) {
         struct mp_rect *origin = &args->rects[i];
         struct gl_float_rect normalized = {
@@ -1000,19 +1007,19 @@ static void render_draw_rectangle(struct ui_context *ctx, struct ui_triangle_dra
             .y1 = origin->y1,
         };
         normalize_to_rect_vert(&normalized);
-        draw_count += normalize_to_triangle_strip(buf_verts, &buf_offset, &normalized, i, args->count);
+        buf_cur = normalize_to_triangle_strip(buf_cur, &normalized, i, args->count, &draw_count);
     }
 
     if (!draw_count)
         return;
 
-    float *buf_color = buf_verts + buf_offset;
-    normalize_to_vec4_color(buf_color, args->color);
+    float *base_color = buf_cur;
+    buf_cur = normalize_to_vec4_color(base_color, args->color);
 
     glUseProgram(program->program_data.program);
-    glVertexAttribPointer(attr_draw_triangle_pos.pos, 2, GL_FLOAT, GL_FALSE, 0, buf_verts);
+    glVertexAttribPointer(attr_draw_triangle_pos.pos, 2, GL_FLOAT, GL_FALSE, 0, base_verts);
     glEnableVertexAttribArray(attr_draw_triangle_pos.pos);
-    glUniform4fv(program->uniform_color, 1, buf_color);
+    glUniform4fv(program->uniform_color, 1, base_color);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, draw_count);
 }
 
