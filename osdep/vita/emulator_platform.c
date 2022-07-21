@@ -21,6 +21,8 @@ static const struct key_map_item platform_key_map[] = {
     { GLFW_KEY_O, UI_KEY_CODE_VITA_R1 },
     { GLFW_KEY_N, UI_KEY_CODE_VITA_START },
     { GLFW_KEY_M, UI_KEY_CODE_VITA_SELECT },
+    { GLFW_KEY_L, UI_KEY_CODE_VITA_VIRTUAL_OK },
+    { GLFW_KEY_K, UI_KEY_CODE_VITA_VIRTUAL_CANCEL },
 };
 
 struct priv_platform {
