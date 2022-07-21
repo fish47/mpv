@@ -431,7 +431,8 @@ static void render_render_start(struct ui_context *ctx)
 
     glViewport(0, 0, VITA_SCREEN_W, VITA_SCREEN_H);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glClearColor(0, 0, 0, 0);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
 }
 
 static void render_render_end(struct ui_context *ctx)
