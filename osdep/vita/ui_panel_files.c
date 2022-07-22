@@ -16,9 +16,26 @@
 #define LAYOUT_ITEM_COUNT 10
 #define LAYOUT_ITEM_HEIGHT 30
 #define LAYOUT_ITEM_FONT_SIZE 30
-#define LAYOUT_ITEM_FONT_COLOR 0xFFFFFFFF
+#define LAYOUT_ITEM_FONT_COLOR 0xffffffff
+#define LAYOUT_ITEM_CURSOR_COLOR 0x722B72ff
+
+#define DPAD_ACT_TRIGGER_DELAY_US   (600 * 1000)
+#define DPAD_ACT_REPEAT_DELAY_US    (40 * 1000)
 
 static const char escape_space_chars[] = "\t\n\r\f\v";
+
+struct dpad_act_spec {
+    enum ui_key_code key;
+    int cursor_offset;
+    int page_offset;
+};
+
+static const struct dpad_act_spec dpad_act_spec_list[] = {
+    { .key = UI_KEY_CODE_VITA_DPAD_UP, .cursor_offset = -1, .page_offset = 0 },
+    { .key = UI_KEY_CODE_VITA_DPAD_DOWN, .cursor_offset = 1, .page_offset = 0 },
+    { .key = UI_KEY_CODE_VITA_DPAD_LEFT, .cursor_offset = 0, .page_offset = -1 },
+    { .key = UI_KEY_CODE_VITA_DPAD_RIGHT, .cursor_offset = 0, .page_offset = 1, },
+};
 
 enum path_item_flag {
     PATH_ITEM_FLAG_TYPE_DIR = 1,
@@ -46,9 +63,14 @@ struct cursor_data {
 struct priv_panel {
     char *full_path;
     struct cursor_data cursor_pos;
+    struct cache_data cache_data;
+
     struct cursor_data *cursor_pos_stack;
     int cursor_pos_count;
-    struct cache_data cache_data;
+
+    const struct dpad_act_spec *pressed_dpad_act;
+    int64_t presssed_dpad_start_time;
+    int pressed_dpad_handled_count;
 };
 
 static char *sanitize_path_name(char *name, struct priv_panel *priv, bool *out_changed)
@@ -337,7 +359,7 @@ static void files_on_draw(struct ui_context *ctx)
             };
             struct ui_triangle_draw_args rect_args = {
                 .rects = &cursor_rect,
-                .color = 0x00ff00ff,
+                .color = LAYOUT_ITEM_CURSOR_COLOR,
                 .count = 1,
             };
             ui_render_driver_vita.draw_rectangle(ctx, &rect_args);
@@ -348,7 +370,7 @@ static void files_on_draw(struct ui_context *ctx)
             .size = LAYOUT_ITEM_FONT_SIZE,
             .x = 40,
             .y = draw_top,
-            .color = 0xffff00ff,
+            .color = LAYOUT_ITEM_FONT_COLOR,
         };
         ui_render_driver_vita.draw_font(ctx, cache->font, &args);
 
@@ -356,37 +378,77 @@ static void files_on_draw(struct ui_context *ctx)
     }
 }
 
-static void move_cursor(struct ui_context *ctx, int cur_offset, int page_offset)
+static void do_move_cursor(struct ui_context *ctx, const struct dpad_act_spec *spec, int count)
 {
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
     if (cache->path_item_count <= 0)
         return;
 
+    int cur_offset = spec->cursor_offset * count;
+    int page_offset = spec->page_offset * count;
     if (!cursor_pos_move(&priv->cursor_pos, cur_offset, page_offset, cache->path_item_count))
         return;
 
     ui_panel_common_invalidate(ctx);
 }
 
+static bool do_handle_dpad_trigger(struct ui_context *ctx, enum ui_key_code code, enum ui_key_state state)
+{
+    const struct dpad_act_spec *spec = NULL;
+    for (size_t i = 0; i < MP_ARRAY_SIZE(dpad_act_spec_list); ++i) {
+        if (dpad_act_spec_list[i].key == code) {
+            spec = &dpad_act_spec_list[i];
+            break;
+        }
+    }
+
+    if (!spec)
+        return false;
+
+    struct priv_panel *priv = ctx->priv_panel;
+    switch (state) {
+    case UI_KEY_STATE_DOWN:
+        priv->pressed_dpad_act = spec;
+        priv->presssed_dpad_start_time = ui_panel_common_get_frame_time(ctx);
+        priv->pressed_dpad_handled_count = 1;
+        do_move_cursor(ctx, spec, 1);
+        break;
+    case UI_KEY_STATE_UP:
+        priv->pressed_dpad_act = NULL;
+        priv->presssed_dpad_start_time = 0;
+        priv->pressed_dpad_handled_count = 0;
+        break;
+    }
+    return true;
+}
+
+static void do_handle_dpad_pressed(struct ui_context *ctx) {
+    struct priv_panel *priv = ctx->priv_panel;
+    if (!priv->pressed_dpad_act)
+        return;
+
+    int delta = ui_panel_common_get_frame_time(ctx)
+            - priv->presssed_dpad_start_time
+            - DPAD_ACT_TRIGGER_DELAY_US;
+    int count = delta / DPAD_ACT_REPEAT_DELAY_US - priv->pressed_dpad_handled_count;
+    if (count <= 0)
+        return;
+
+    priv->pressed_dpad_handled_count += count;
+    do_move_cursor(ctx, priv->pressed_dpad_act, count);
+}
+
 static void files_on_key(struct ui_context *ctx, enum ui_key_code code, enum ui_key_state state)
 {
+    bool done_dpad = do_handle_dpad_trigger(ctx, code, state);
+    if (done_dpad)
+        return;
+
     if (state != UI_KEY_STATE_DOWN)
         return;
 
     switch (code) {
-    case UI_KEY_CODE_VITA_DPAD_UP:
-        move_cursor(ctx, -1, 0);
-        break;
-    case UI_KEY_CODE_VITA_DPAD_DOWN:
-        move_cursor(ctx, 1, 0);
-        break;
-    case UI_KEY_CODE_VITA_DPAD_LEFT:
-        move_cursor(ctx, 0, -1);
-        break;
-    case UI_KEY_CODE_VITA_DPAD_RIGHT:
-        move_cursor(ctx, 0, 1);
-        break;
     case UI_KEY_CODE_VITA_VIRTUAL_OK:
         push_path(ctx);
         break;
@@ -398,6 +460,11 @@ static void files_on_key(struct ui_context *ctx, enum ui_key_code code, enum ui_
     }
 }
 
+static void files_on_poll(struct ui_context *ctx)
+{
+    do_handle_dpad_pressed(ctx);
+}
+
 const struct ui_panel ui_panel_files = {
     .priv_size = sizeof(struct priv_panel),
     .init = files_init,
@@ -405,6 +472,6 @@ const struct ui_panel ui_panel_files = {
     .on_show = files_on_show,
     .on_hide = files_on_hide,
     .on_draw = files_on_draw,
-    .on_poll = NULL,
+    .on_poll = files_on_poll,
     .on_key = files_on_key,
 };
