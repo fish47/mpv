@@ -320,3 +320,9 @@ void ui_panel_common_pop_all(struct ui_context *ctx)
     while (get_top_panel(ctx))
         do_pop_panel(ctx);
 }
+
+int64_t ui_panel_common_get_frame_time(struct ui_context *ctx)
+{
+    struct ui_context_internal *priv = ctx->priv_context;
+    return priv->frame_start;
+}

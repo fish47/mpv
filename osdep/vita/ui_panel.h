@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdint.h>
 #include <stdbool.h>
 
 enum ui_key_code;
@@ -33,6 +34,7 @@ void *ui_panel_common_get_priv(struct ui_context *ctx, const struct ui_panel *pa
 void ui_panel_common_push(struct ui_context *ctx, const struct ui_panel *panel, void *data);
 void ui_panel_common_pop(struct ui_context *ctx);
 void ui_panel_common_pop_all(struct ui_context *ctx);
+int64_t ui_panel_common_get_frame_time(struct ui_context *ctx);
 
 void *ui_panel_player_get_vo_data(struct ui_context *ctx);
 void ui_panel_player_set_vo_data(struct ui_context *ctx, void *data);
