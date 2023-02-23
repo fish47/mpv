@@ -303,7 +303,10 @@ if(BUILD_VITA)
     list(APPEND mpv_compile_flags
         -fno-optimize-sibling-calls)
 else()
-    set(OpenGL_GL_PREFERENCE GLVND)
+    if(POLICY CMP0072)
+        set(OpenGL_GL_PREFERENCE LEGACY)
+    endif()
+
     find_package(OpenAL REQUIRED)
     find_package(OpenGL REQUIRED)
     find_package(glfw3 REQUIRED)
