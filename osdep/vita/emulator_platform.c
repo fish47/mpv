@@ -81,10 +81,10 @@ static bool platform_init(struct ui_context *ctx)
     glfwDefaultWindowHints();
     glfwSetWindowPos(window, win_pos_x, win_pos_y);
     glfwShowWindow(window);
-    glfwSwapInterval(0);
     glfwMakeContextCurrent(window);
     glfwSetWindowUserPointer(window, ctx);
     glfwSetWindowCloseCallback(window, on_window_close);
+    glfwSwapInterval(0);
 
     struct priv_platform *priv = get_priv_platform(ctx);
     priv->window = window;
