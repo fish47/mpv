@@ -367,7 +367,9 @@ static void pop_path(struct ui_context *ctx)
 static bool files_init(struct ui_context *ctx, void *p)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    priv->work_dir = bstrdup(priv, bstr0("/home/fish47"));
+    const char *init_dir = ui_platform_driver_vita.get_files_dir(ctx);
+    priv->work_dir.len = 0;
+    bstr_xappend(priv, &priv->work_dir, bstr0(init_dir));
     fill_path_items(priv);
     return true;
 }
@@ -378,7 +380,8 @@ static void files_uninit(struct ui_context *ctx)
 static void files_on_show(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    ui_render_driver_vita.font_init(ctx, &priv->cache_data.font, "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc");
+    const char *font_path = ui_platform_driver_vita.get_font_path(ctx);
+    ui_render_driver_vita.font_init(ctx, &priv->cache_data.font, font_path);
 }
 
 static void files_on_hide(struct ui_context *ctx)

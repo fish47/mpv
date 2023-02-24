@@ -35,11 +35,13 @@ struct ui_triangle_draw_args {
 
 struct ui_platform_driver {
     int priv_size;
-    bool (*init)(struct ui_context *ctx);
+    bool (*init)(struct ui_context *ctx, int argc, char *argv[]);
     void (*uninit)(struct ui_context *ctx);
     void (*exit)();
     void (*poll_events)(struct ui_context *ctx);
     uint32_t (*poll_keys)(struct ui_context *ctx);
+    const char* (*get_font_path)(struct ui_context *ctx);
+    const char* (*get_files_dir)(struct ui_context *ctx);
 };
 
 struct ui_audio_driver {

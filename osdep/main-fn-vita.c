@@ -119,7 +119,7 @@ static void ui_context_destroy(void *p)
     }
 }
 
-static struct ui_context *ui_context_new()
+static struct ui_context *ui_context_new(int argc, char *argv[])
 {
     struct ui_context *ctx = talloc_zero_size(NULL, sizeof(struct ui_context));
     talloc_set_destructor(ctx, ui_context_destroy);
@@ -132,7 +132,7 @@ static struct ui_context *ui_context_new()
     pthread_cond_init(&priv->wakeup, NULL);
 
     ctx->priv_platform = talloc_zero_size(ctx, ui_platform_driver_vita.priv_size);
-    if (!ui_platform_driver_vita.init(ctx))
+    if (!ui_platform_driver_vita.init(ctx, argc, argv))
         goto error;
 
     ctx->priv_render = talloc_zero_size(ctx, ui_render_driver_vita.priv_size);
@@ -270,9 +270,9 @@ static void main_loop(struct ui_context *ctx)
 
 int main(int argc, char *argv[])
 {
-    struct ui_context *ctx = ui_context_new();
+    struct ui_context *ctx = ui_context_new(argc, argv);
     main_loop(ctx);
-    talloc_free(ctx);
+    TA_FREEP(&ctx);
     if (ui_platform_driver_vita.exit)
         ui_platform_driver_vita.exit();
     return 0;

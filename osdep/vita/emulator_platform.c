@@ -1,7 +1,13 @@
-#include "emulator.h"
 #include "ui_driver.h"
 #include "ui_device.h"
 #include "ui_panel.h"
+#include "emulator.h"
+#include "ta/ta.h"
+
+#include <stdint.h>
+#include <unistd.h>
+#include <limits.h>
+#include <sys/stat.h>
 
 struct key_map_item {
     int glfw_key_code;
@@ -27,6 +33,8 @@ static const struct key_map_item platform_key_map[] = {
 
 struct priv_platform {
     GLFWwindow *window;
+    char *files_dir;
+    char *font_path;
 };
 
 static struct priv_platform *get_priv_platform(struct ui_context *ctx)
@@ -60,7 +68,15 @@ static void on_window_close(GLFWwindow *window)
     ui_panel_common_pop_all(ctx);
 }
 
-static bool platform_init(struct ui_context *ctx)
+static uint64_t get_path_stat_type(const char *path)
+{
+    struct stat path_stat;
+    if (stat(path, &path_stat) != 0)
+        return 0;
+    return path_stat.st_mode;
+}
+
+static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
 {
     if (!glfwInit())
         return false;
@@ -88,7 +104,30 @@ static bool platform_init(struct ui_context *ctx)
 
     struct priv_platform *priv = get_priv_platform(ctx);
     priv->window = window;
-    return true;
+
+    int opt = 0;
+    char buf[PATH_MAX] = {0};
+    char *normalized = NULL;
+    while ((opt = getopt(argc, argv, "f:d:")) != -1) {
+        switch (opt) {
+        case 'f':
+            normalized = realpath(optarg, buf);
+            if (S_ISREG(get_path_stat_type(normalized)))
+                priv->font_path = ta_strdup(priv, normalized);
+            break;
+        case 'd':
+            normalized = realpath(optarg, buf);
+            if (S_ISDIR(get_path_stat_type(normalized)))
+                priv->files_dir = ta_strdup(priv, normalized);
+            break;
+        }
+    }
+
+    if (priv->font_path && priv->files_dir)
+        return true;
+
+    printf("Usage: -f FONT_PATH -d OPEN_DIR\n");
+    return false;
 }
 
 static void platform_uninit(struct ui_context *ctx)
@@ -117,6 +156,16 @@ static uint32_t platform_poll_keys(struct ui_context *ctx)
     return bits;
 }
 
+static const char *platform_get_font_path(struct ui_context *ctx)
+{
+    return get_priv_platform(ctx)->font_path;
+}
+
+static const char *platform_get_files_dir(struct ui_context *ctx)
+{
+    return get_priv_platform(ctx)->files_dir;
+}
+
 const struct ui_platform_driver ui_platform_driver_vita = {
     .priv_size = sizeof(struct priv_platform),
     .init = platform_init,
@@ -124,6 +173,8 @@ const struct ui_platform_driver ui_platform_driver_vita = {
     .exit = NULL,
     .poll_events = platform_poll_events,
     .poll_keys = platform_poll_keys,
+    .get_font_path = platform_get_font_path,
+    .get_files_dir = platform_get_files_dir,
 };
 
 GLFWwindow *emulator_get_window(struct ui_context *ctx)
