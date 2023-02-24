@@ -253,6 +253,29 @@ static int cmp_date_desc(const void *l, const void *r)
     return do_cmp_path_item(l, r, CMP_FIELD_TYPE_DATE, true);
 }
 
+static void cursor_pos_relocate(struct priv_panel *priv, char *name)
+{
+    int cursor = priv->cursor_pos.current;
+    if (cursor >= priv->cache_data.path_item_count)
+        goto relocate;
+
+    char *cursor_name = priv->cache_data.path_items[cursor].name;
+    if (strcmp(cursor_name, name) != 0)
+        goto relocate;
+
+    return;
+
+relocate:
+    for (int i = 0; i < priv->cache_data.path_item_count; ++i) {
+        if (strcmp(name, priv->cache_data.path_items[i].name) == 0) {
+            priv->cursor_pos = (struct cursor_data) { .current = i, .top = i };
+            return;
+        }
+    }
+
+    priv->cursor_pos = (struct cursor_data) { .current = 0, .top = 0 };
+}
+
 static void do_fill_path_items(struct priv_panel *priv, DIR *dir)
 {
     bstr item_path = bstrdup(priv, priv->work_dir);
@@ -325,7 +348,7 @@ static void do_fill_path_items(struct priv_panel *priv, DIR *dir)
     TA_FREEP(&item_path.start);
 }
 
-static void fill_path_items(struct priv_panel *priv)
+static void fill_path_items(struct priv_panel *priv, char *match_name, bool reset_cursor)
 {
     struct cache_data *cache = &priv->cache_data;
     cache->path_item_count = 0;
@@ -337,6 +360,17 @@ static void fill_path_items(struct priv_panel *priv)
     if (dir) {
         do_fill_path_items(priv, dir);
         closedir(dir);
+    }
+
+    if (match_name) {
+        cursor_pos_relocate(priv, match_name);
+    } else if (reset_cursor) {
+        priv->cursor_pos = (struct cursor_data) { .current = 0, .top = 0 };
+    } else {
+        int max_pos = MPMAX(cache->path_item_count - 1, 0);
+        struct cursor_data *cursor = &priv->cursor_pos;
+        cursor->current = MPCLAMP(cursor->current, 0, max_pos);
+        cursor->top = MPCLAMP(cursor->top, 0, max_pos);
     }
 }
 
@@ -373,28 +407,10 @@ static bool cursor_pos_move(struct cursor_data *pos, int cur_offset, int page_of
     return false;
 }
 
-static void cursor_pos_relocate(struct ui_context *ctx, char *name)
+static void join_path(void *p, bstr *path, struct path_item *item)
 {
-    struct priv_panel *priv = ctx->priv_panel;
-    int cursor = priv->cursor_pos.current;
-    if (cursor >= priv->cache_data.path_item_count)
-        goto relocate;
-
-    char *cursor_name = priv->cache_data.path_items[cursor].name;
-    if (strcmp(cursor_name, name) != 0)
-        goto relocate;
-
-    return;
-
-relocate:
-    for (int i = 0; i < priv->cache_data.path_item_count; ++i) {
-        if (strcmp(name, priv->cache_data.path_items[i].name) == 0) {
-            priv->cursor_pos = (struct cursor_data) { .current = i, .top = i };
-            return;
-        }
-    }
-
-    priv->cursor_pos = (struct cursor_data) { .current = 0, .top = 0 };
+    bstr_xappend(p, path, bstr0(PATH_SEP));
+    bstr_xappend(p, path, bstr0(item->name));
 }
 
 static void push_path(struct ui_context *ctx)
@@ -402,12 +418,17 @@ static void push_path(struct ui_context *ctx)
     struct priv_panel *priv = ctx->priv_panel;
     struct path_item *item = &priv->cache_data.path_items[priv->cursor_pos.current];
     if (item->flags & PATH_ITEM_FLAG_TYPE_DIR) {
-        bstr_xappend(priv, &priv->work_dir, bstr0(PATH_SEP));
-        bstr_xappend(priv, &priv->work_dir, bstr0(item->name));
+        // remember cursor position in case of backward navigation
         MP_TARRAY_APPEND(priv, priv->cursor_pos_stack, priv->cursor_pos_count, priv->cursor_pos);
-        priv->cursor_pos = (struct cursor_data) { .current = 0, .top = 0 };
-        fill_path_items(priv);
+        join_path(priv, &priv->work_dir, item);
+        fill_path_items(priv, NULL, true);
         ui_panel_common_invalidate(ctx);
+    } else if (item->flags & PATH_ITEM_FLAG_TYPE_FILE) {
+        struct ui_panel_player_init_params *p = talloc_ptrtype(priv, p);
+        bstr file_path = bstrdup(priv, priv->work_dir);
+        join_path(priv, &file_path, item);
+        p->path = ta_steal(p, (char*) file_path.start);
+        ui_panel_common_push(ctx, &ui_panel_player, p);
     }
 }
 
@@ -427,13 +448,11 @@ static void pop_path(struct ui_context *ctx)
     priv->work_dir.start[sep] = 0;
     priv->work_dir.len = sep;
 
-    fill_path_items(priv);
-    MP_TARRAY_POP(priv->cursor_pos_stack, priv->cursor_pos_count, &priv->cursor_pos);
-    ui_panel_common_invalidate(ctx);
-
     // try to relocate popped position data if it is not matched
-    char *fallback_name = (char*) priv->work_dir.start + sep + 1;
-    cursor_pos_relocate(ctx, fallback_name);
+    char *match_name = (char*) priv->work_dir.start + sep + 1;
+    MP_TARRAY_POP(priv->cursor_pos_stack, priv->cursor_pos_count, &priv->cursor_pos);
+    fill_path_items(priv, match_name, false);
+    ui_panel_common_invalidate(ctx);
 }
 
 static bool files_init(struct ui_context *ctx, void *p)
@@ -446,9 +465,6 @@ static bool files_init(struct ui_context *ctx, void *p)
     return true;
 }
 
-static void files_uninit(struct ui_context *ctx)
-{}
-
 static void files_on_show(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
@@ -456,11 +472,20 @@ static void files_on_show(struct ui_context *ctx)
         const char *font_path = ui_platform_driver_vita.get_font_path(ctx);
         ui_render_driver_vita.font_init(ctx, &priv->cache_data.font, font_path);
     }
-    fill_path_items(priv);
+    fill_path_items(priv, NULL, false);
 }
 
 static void files_on_hide(struct ui_context *ctx)
-{}
+{
+    struct priv_panel *priv = ctx->priv_panel;
+    struct cache_data *cache = &priv->cache_data;
+    if (cache->font)
+        ui_render_driver_vita.font_uninit(ctx, &cache->font);
+    TA_FREEP(&cache->tmp_str_buf);
+    TA_FREEP(&cache->path_name_pool);
+    TA_FREEP(&cache->path_items);
+    cache->path_item_count = 0;
+}
 
 static const char *format_name(void *p, char **buf, struct path_item *item)
 {
@@ -680,7 +705,7 @@ static void files_on_poll(struct ui_context *ctx)
 const struct ui_panel ui_panel_files = {
     .priv_size = sizeof(struct priv_panel),
     .init = files_init,
-    .uninit = files_uninit,
+    .uninit = NULL,
     .on_show = files_on_show,
     .on_hide = files_on_hide,
     .on_draw = files_on_draw,

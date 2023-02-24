@@ -200,15 +200,16 @@ static void do_pop_panel(struct ui_context *ctx)
     if (!priv->top_panel)
         return;
 
-    priv->top_panel->uninit(ctx);
+    if (priv->top_panel->uninit)
+        priv->top_panel->uninit(ctx);
     priv->top_panel = NULL;
     TA_FREEP(&ctx->priv_panel);
 
-    struct ui_panel_item *item = NULL;
-    MP_TARRAY_POP(priv->panel_stack, priv->panel_count, item);
-    if (item) {
-        ctx->priv_panel = item->data;
-        priv->top_panel = item->panel;
+    struct ui_panel_item item;
+    bool has_panel = MP_TARRAY_POP(priv->panel_stack, priv->panel_count, &item);
+    if (has_panel) {
+        ctx->priv_panel = item.data;
+        priv->top_panel = item.panel;
         if (priv->top_panel->on_show)
             priv->top_panel->on_show(ctx);
     }
@@ -228,25 +229,13 @@ static void handle_redraw(struct ui_context *ctx)
     ui_render_driver_vita.render_end(ctx);
 }
 
-static void* new_player_params(void *parent)
-{
-    const char *path =
-#ifdef __vita__
-    "ux0:/test/test.mp4";
-#else
-    "/tmp/test.mp4";
-#endif
-    struct ui_panel_player_init_params *p = talloc_ptrtype(parent, p);
-    *p = (struct ui_panel_player_init_params) {
-        .path = talloc_strdup(p, path),
-    };
-    return p;
-}
-
 static void main_loop(struct ui_context *ctx)
 {
     if (!ctx)
         return;
+
+    // message loop relys on timestamp service
+    mp_time_init();
 
     ui_panel_common_push(ctx, &ui_panel_files, NULL);
     while (true) {
