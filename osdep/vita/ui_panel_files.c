@@ -2,27 +2,40 @@
 #include "ui_device.h"
 #include "ui_driver.h"
 #include "ui_panel.h"
+#include "misc/bstr.h"
 #include "ta/ta_talloc.h"
 
+#include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 #include <dirent.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 
 #define PATH_SEP "/"
 #define PATH_DIR_PARENT ".."
 #define PATH_DIR_CURRENT "."
+#define PATH_UNKNOWN_SIZE "--"
 #define PATH_ESCAPED_SPACE ' '
 
 #define LAYOUT_ITEM_COUNT 10
-#define LAYOUT_ITEM_HEIGHT 30
-#define LAYOUT_ITEM_FONT_SIZE 30
-#define LAYOUT_ITEM_FONT_COLOR 0xffffffff
+
+#define LAYOUT_ITEM_NAME_L 40
+#define LAYOUT_ITEM_SIZE_L 500
+#define LAYOUT_ITEM_DATE_L 700
+#define LAYOUT_ITEM_TEXT_T 30
+#define LAYOUT_ITEM_TEXT_FONT_SIZE 30
+
+#define LAYOUT_ITEM_CURSOR_L 0
+#define LAYOUT_ITEM_CURSOR_T 0
+#define LAYOUT_ITEM_CURSOR_W 800
+#define LAYOUT_ITEM_CURSOR_H 40
+
+#define LAYOUT_ITEM_TEXT_COLOR 0xffffffff
 #define LAYOUT_ITEM_CURSOR_COLOR 0x722B72ff
 
 #define DPAD_ACT_TRIGGER_DELAY_US   (600 * 1000)
 #define DPAD_ACT_REPEAT_DELAY_US    (40 * 1000)
-
-static const char escape_space_chars[] = "\t\n\r\f\v";
 
 struct dpad_act_spec {
     enum ui_key_code key;
@@ -37,21 +50,43 @@ static const struct dpad_act_spec dpad_act_spec_list[] = {
     { .key = UI_KEY_CODE_VITA_DPAD_RIGHT, .cursor_offset = 0, .page_offset = 1, },
 };
 
+struct size_spec {
+    int size;
+    char *name;
+};
+
+static const struct size_spec size_spec_list[] = {
+    { .size = 1, .name = "B" },
+    { .size = 1 << 10, .name = "KB" },
+    { .size = 1 << 20, .name = "MB" },
+    { .size = 1 << 30, .name = "GB" },
+};
+
 enum path_item_flag {
-    PATH_ITEM_FLAG_TYPE_DIR = 1,
-    PATH_ITEM_FLAG_SANTIZIE_NAME = 1 << 1,
+    PATH_ITEM_FLAG_SANTIZIE_NAME = 1,
+    PATH_ITEM_FLAG_TYPE_DIR = 1 << 1,
+    PATH_ITEM_FLAG_TYPE_FILE = 1 << 2,
 };
 
 struct path_item {
     char *name;
+    int length;
     int flags;
+
+    uint16_t date_year;
+    uint8_t date_month;
+    uint8_t date_day;
+    uint8_t date_hour;
+    uint8_t date_minute;
+    uint8_t size_type : 3;
+    uint16_t size_num : 13;
 };
 
 struct cache_data {
     struct ui_font *font;
     struct path_item *path_items;
     int path_item_count;
-    char *sanitized_name_cache;
+    char *tmp_str_buf;
     char *path_name_pool;
 };
 
@@ -61,7 +96,7 @@ struct cursor_data {
 };
 
 struct priv_panel {
-    char *full_path;
+    bstr work_dir;
     struct cursor_data cursor_pos;
     struct cache_data cache_data;
 
@@ -73,37 +108,27 @@ struct priv_panel {
     int pressed_dpad_handled_count;
 };
 
-static char *sanitize_path_name(char *name, struct priv_panel *priv, bool *out_changed)
+static bool is_special_white_space(char c)
 {
-    int capacity = 0;
-    char *out = NULL;
-    if (priv) {
-        out = priv->cache_data.sanitized_name_cache;
-        if (out) {
-            capacity = ta_get_size(out);
-        } else {
-            capacity = 100;
-            out = ta_alloc_size(priv, capacity);
-        }
-    }
+    return c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+}
 
+static bool sanitize_path_name(char *name, char *out)
+{
     int i = 0;
     bool stop = false;
     bool changed = false;
     while (!stop) {
         char ch = name[i];
         if (!ch) {
+            // make sure to write the last terminator
             stop = true;
-        } else if (strchr(escape_space_chars, ch)) {
+        } else if (is_special_white_space(ch)) {
             changed = true;
             ch = PATH_ESCAPED_SPACE;
         }
 
-        if (priv) {
-            if (capacity <= i) {
-                capacity <<= 1;
-                out = ta_realloc_size(priv, out, capacity);
-            }
+        if (out) {
             out[i] = ch;
         } else if (changed) {
             // stop if special character check failed
@@ -113,24 +138,31 @@ static char *sanitize_path_name(char *name, struct priv_panel *priv, bool *out_c
         ++i;
     }
 
-    if (out_changed)
-        *out_changed = changed;
+    return changed;
+}
 
-    if (priv)
-        priv->cache_data.sanitized_name_cache = out;
-
-    return (changed && out) ? out : name;
+static void resolve_path_size_data(uint64_t bytes, uint32_t *num, uint8_t *type)
+{
+    for (size_t i = 0; i < MP_ARRAY_SIZE(size_spec_list); ++i) {
+        const struct size_spec *spec = &size_spec_list[i];
+        if (bytes < spec->size) {
+            int idx = MPMAX(i, 1) - 1;
+            spec = &size_spec_list[idx];
+            *num = bytes / spec->size;
+            *type = idx;
+            break;
+        }
+    }
 }
 
 static int resolve_path_item_flags(struct dirent *d)
 {
-    bool need_sanitize = false;
-    sanitize_path_name(d->d_name, NULL, &need_sanitize);
-
     int flags = 0;
     if (d->d_type & DT_DIR)
         flags |= PATH_ITEM_FLAG_TYPE_DIR;
-    if (need_sanitize)
+    if (d->d_type & DT_REG)
+        flags |= PATH_ITEM_FLAG_TYPE_FILE;
+    if (sanitize_path_name(d->d_name, NULL))
         flags |= PATH_ITEM_FLAG_SANTIZIE_NAME;
     return flags;
 }
@@ -152,21 +184,13 @@ static int compare_path_item(const void *l, const void *r)
 
 static void do_fill_path_items(struct priv_panel *priv, DIR *dir)
 {
-    // a hack to suppress 'casting int to char*' warning
-    char *base = NULL;
+    bstr item_path = bstrdup(priv, priv->work_dir);
+    int item_cut_idx = item_path.len + 1;
+    bstr_xappend(priv, &item_path, bstr0(PATH_SEP));
 
-    // pack all path names into a continuous memory block
+    char *base_zero = NULL; // a hack to suppress 'casting int to char*' warning
     struct cache_data *cache = &priv->cache_data;
     int offset = 0;
-    int capacity = 0;
-    char *name_pool = cache->path_name_pool;
-    if (name_pool) {
-        capacity = ta_get_size(name_pool);
-    } else {
-        capacity = 1024;
-        name_pool = ta_alloc_size(priv, capacity);
-    }
-
     while (true) {
         struct dirent *d = readdir(dir);
         if (!d)
@@ -177,33 +201,56 @@ static void do_fill_path_items(struct priv_panel *priv, DIR *dir)
         if (strcmp(d->d_name, PATH_DIR_CURRENT) == 0)
             continue;
 
-        // ensure the capacity and copy path name with terminator
-        int remain = capacity - offset;
-        int request = strlen(d->d_name) + 1;
-        if (remain < request) {
-            capacity <<= 1;
-            name_pool = ta_realloc_size(priv, name_pool, capacity);
+        // copy path name with terminator
+        bstr name = bstr0(d->d_name);
+        int request = name.len + 1;
+        MP_TARRAY_GROW(priv, cache->path_name_pool, offset + request);
+        memcpy(cache->path_name_pool + offset, name.start, request);
+
+        // build absolute path
+        item_path.len = item_cut_idx;
+        item_path.start[item_cut_idx] = 0;
+        bstr_xappend(priv, &item_path, name);
+
+        struct tm file_tm = {0};
+        struct stat file_stat;
+        uint8_t size_type = 0;
+        uint32_t size_num = 0;
+        int flags = resolve_path_item_flags(d);
+        bool succeed = (stat((char*) item_path.start, &file_stat) == 0);
+        if (succeed) {
+            if (flags & PATH_ITEM_FLAG_TYPE_FILE)
+                resolve_path_size_data(file_stat.st_size, &size_num, &size_type);
+            file_tm = *localtime(&file_stat.st_mtime);
+            file_tm.tm_year += 1900;
+            file_tm.tm_mon += 1;
         }
-        memcpy(name_pool + offset, d->d_name, request);
 
         // remember offsets before iteration is done
         MP_TARRAY_APPEND(priv, cache->path_items, cache->path_item_count, (struct path_item) {
-            .name = base + offset,
-            .flags = resolve_path_item_flags(d),
+            .name = base_zero + offset,
+            .length = name.len,
+            .flags = flags,
+            .date_year = file_tm.tm_year,
+            .date_month = file_tm.tm_mon,
+            .date_day = file_tm.tm_mday,
+            .date_hour = file_tm.tm_hour,
+            .date_minute = file_tm.tm_min,
+            .size_type = size_type,
+            .size_num = size_num,
         });
         offset += request;
     }
 
     // translate offsets to addresses
-    for (int i = 0; i < cache->path_item_count; ++i) {
-        char **pp_name = &cache->path_items[i].name;
-        int offset = *pp_name - base;
-        *pp_name = name_pool + offset;
-    }
+    long translate_offset = cache->path_name_pool - base_zero;
+    for (int i = 0; i < cache->path_item_count; ++i)
+        cache->path_items[i].name += translate_offset;
+
     qsort(cache->path_items, cache->path_item_count, sizeof(struct path_item), compare_path_item);
 
-    // pool capacity may be expanded during iteration
-    cache->path_name_pool = name_pool;
+    item_path.len = 0;
+    TA_FREEP(&item_path.start);
 }
 
 static void fill_path_items(struct priv_panel *priv)
@@ -211,10 +258,10 @@ static void fill_path_items(struct priv_panel *priv)
     struct cache_data *cache = &priv->cache_data;
     cache->path_item_count = 0;
 
-    if (!priv->full_path)
+    if (!priv->work_dir.len)
         return;
 
-    DIR *dir = opendir(priv->full_path);
+    DIR *dir = opendir((char*) priv->work_dir.start);
     if (dir) {
         do_fill_path_items(priv, dir);
         closedir(dir);
@@ -283,8 +330,8 @@ static void push_path(struct ui_context *ctx)
     struct priv_panel *priv = ctx->priv_panel;
     struct path_item *item = &priv->cache_data.path_items[priv->cursor_pos.current];
     if (item->flags & PATH_ITEM_FLAG_TYPE_DIR) {
-        ta_strdup_append(&priv->full_path, PATH_SEP);
-        ta_strdup_append(&priv->full_path, item->name);
+        bstr_xappend(priv, &priv->work_dir, bstr0(PATH_SEP));
+        bstr_xappend(priv, &priv->work_dir, bstr0(item->name));
         MP_TARRAY_APPEND(priv, priv->cursor_pos_stack, priv->cursor_pos_count, priv->cursor_pos);
         priv->cursor_pos = (struct cursor_data) { .current = 0, .top = 0 };
         fill_path_items(priv);
@@ -300,24 +347,27 @@ static void pop_path(struct ui_context *ctx)
         return;
     }
 
-    char *sep = strrchr(priv->full_path, PATH_SEP[0]);
-    if (!sep)
+    int sep = bstrrchr(priv->work_dir, PATH_SEP[0]);
+    if (sep < 0)
         return;
 
-    *sep = 0;
+    // pop last path segment
+    priv->work_dir.start[sep] = 0;
+    priv->work_dir.len = sep;
+
     fill_path_items(priv);
     MP_TARRAY_POP(priv->cursor_pos_stack, priv->cursor_pos_count, &priv->cursor_pos);
     ui_panel_common_invalidate(ctx);
 
-    // in case path items are changed
-    char *name = sep + 1;
-    cursor_pos_relocate(ctx, name);
+    // try to relocate popped position data if it is not matched
+    char *fallback_name = (char*) priv->work_dir.start + sep + 1;
+    cursor_pos_relocate(ctx, fallback_name);
 }
 
 static bool files_init(struct ui_context *ctx, void *p)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    priv->full_path = ta_strdup(priv, "/home/fish47");
+    priv->work_dir = bstrdup(priv, bstr0("/home/fish47"));
     fill_path_items(priv);
     return true;
 }
@@ -334,6 +384,36 @@ static void files_on_show(struct ui_context *ctx)
 static void files_on_hide(struct ui_context *ctx)
 {}
 
+static const char *format_name(void *p, char **buf, struct path_item *item)
+{
+    // it is uncommon to have special characters
+    if (item->flags & PATH_ITEM_FLAG_SANTIZIE_NAME) {
+        MP_TARRAY_GROW(p, *buf, (item->length + 1));
+        sanitize_path_name(item->name, *buf);
+        return *buf;
+    }
+
+    return item->name;
+}
+
+static const char *format_size(char *buf, struct path_item *item)
+{
+    if (item->flags & PATH_ITEM_FLAG_TYPE_FILE) {
+        sprintf(buf, "%u%s", item->size_num, size_spec_list[item->size_type].name);
+        return buf;
+    } else {
+        return PATH_UNKNOWN_SIZE;
+    }
+}
+
+static const char *format_date(char *buf, struct path_item *item)
+{
+    sprintf(buf, "%04u-%02u-%02u %02u:%02u",
+            item->date_year, item->date_month, item->date_day,
+            item->date_hour, item->date_minute);
+    return buf;
+}
+
 static void files_on_draw(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
@@ -341,21 +421,25 @@ static void files_on_draw(struct ui_context *ctx)
     if (!cache->font)
         return;
 
-    int draw_top = 60;
+    MP_TARRAY_GROW(priv, cache->tmp_str_buf, 100);
+
+    struct ui_font_draw_args args;
+    args.size = LAYOUT_ITEM_TEXT_FONT_SIZE;
+    args.color = LAYOUT_ITEM_TEXT_COLOR;
+
+    int draw_top = LAYOUT_ITEM_CURSOR_T;
     for (int i = 0; i < LAYOUT_ITEM_COUNT; ++i) {
         int idx = priv->cursor_pos.top + i;
         if (idx >= cache->path_item_count)
             break;
 
-        struct path_item *item = &cache->path_items[idx];
-        bool need_sanitize = (item->flags & PATH_ITEM_FLAG_SANTIZIE_NAME);
-        char *text = need_sanitize ? sanitize_path_name(item->name, priv, NULL) : item->name;
+        // cursor rect
         if (priv->cursor_pos.current == idx) {
             struct mp_rect cursor_rect = {
-                .x0 = 0,
-                .y0 = draw_top - 40,
-                .x1 = 700,
-                .y1 = draw_top,
+                .x0 = LAYOUT_ITEM_CURSOR_L,
+                .y0 = draw_top,
+                .x1 = LAYOUT_ITEM_CURSOR_W,
+                .y1 = draw_top + LAYOUT_ITEM_CURSOR_H,
             };
             struct ui_triangle_draw_args rect_args = {
                 .rects = &cursor_rect,
@@ -365,16 +449,25 @@ static void files_on_draw(struct ui_context *ctx)
             ui_render_driver_vita.draw_rectangle(ctx, &rect_args);
         }
 
-        struct ui_font_draw_args args = {
-            .text = text,
-            .size = LAYOUT_ITEM_FONT_SIZE,
-            .x = 40,
-            .y = draw_top,
-            .color = LAYOUT_ITEM_FONT_COLOR,
-        };
+        struct path_item *item = &cache->path_items[idx];
+        args.y = draw_top + LAYOUT_ITEM_TEXT_T;
+
+        // name
+        args.x = LAYOUT_ITEM_NAME_L;
+        args.text = format_name(priv, &cache->tmp_str_buf, item);
         ui_render_driver_vita.draw_font(ctx, cache->font, &args);
 
-        draw_top += 40;
+        // size
+        args.x = LAYOUT_ITEM_SIZE_L;
+        args.text = format_size(cache->tmp_str_buf, item);
+        ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+
+        // date
+        args.x = LAYOUT_ITEM_DATE_L;
+        args.text = format_date(cache->tmp_str_buf, item);
+        ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+
+        draw_top += LAYOUT_ITEM_CURSOR_H;
     }
 }
 
