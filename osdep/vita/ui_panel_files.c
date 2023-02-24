@@ -62,6 +62,27 @@ static const struct size_spec size_spec_list[] = {
     { .size = 1 << 30, .name = "GB" },
 };
 
+
+static int cmp_name_asc(const void *l, const void *r);
+static int cmp_name_desc(const void *l, const void *r);
+static int cmp_size_asc(const void *l, const void *r);
+static int cmp_size_desc(const void *l, const void *r);
+static int cmp_date_asc(const void *l, const void *r);
+static int cmp_date_desc(const void *l, const void *r);
+
+enum cmp_field_type {
+    CMP_FIELD_TYPE_NAME,
+    CMP_FIELD_TYPE_SIZE,
+    CMP_FIELD_TYPE_DATE,
+};
+
+typedef int (*cmp_func)(const void *pa, const void *pb);
+static const cmp_func cmp_func_list[][2] = {
+    { cmp_name_asc, cmp_name_desc },
+    { cmp_size_asc, cmp_size_desc },
+    { cmp_date_asc, cmp_date_desc },
+};
+
 enum path_item_flag {
     PATH_ITEM_FLAG_SANTIZIE_NAME = 1,
     PATH_ITEM_FLAG_TYPE_DIR = 1 << 1,
@@ -99,6 +120,7 @@ struct priv_panel {
     bstr work_dir;
     struct cursor_data cursor_pos;
     struct cache_data cache_data;
+    cmp_func cmp_func;
 
     struct cursor_data *cursor_pos_stack;
     int cursor_pos_count;
@@ -167,7 +189,7 @@ static int resolve_path_item_flags(struct dirent *d)
     return flags;
 }
 
-static int compare_path_item(const void *l, const void *r)
+static int do_cmp_path_item(const void *l, const void *r, enum cmp_field_type type, bool reverse)
 {
     const struct path_item* lhs = l;
     const struct path_item* rhs = r;
@@ -178,8 +200,57 @@ static int compare_path_item(const void *l, const void *r)
     if (l_dir != r_dir)
         return r_dir - l_dir;
 
-    // stdlib should be fine to handle utf8 string comparation
-    return strcmp(lhs->name, rhs->name);
+    int tmp = 0;
+    int result = 0;
+    switch (type) {
+    case CMP_FIELD_TYPE_NAME:
+        // stdlib should be fine to handle utf8 string comparison
+        result = strcmp(lhs->name, rhs->name);
+        break;
+    case CMP_FIELD_TYPE_DATE:
+        result = (tmp = lhs->date_year - rhs->date_year) != 0 ? tmp :
+                (tmp = lhs->date_month - rhs->date_month) != 0 ? tmp :
+                (tmp = lhs->date_day - rhs->date_day) != 0 ? tmp :
+                (tmp = lhs->date_hour - rhs->date_hour) != 0 ? tmp :
+                (tmp = lhs->date_minute - rhs->date_minute) != 0 ? tmp : 0;
+        break;
+    case CMP_FIELD_TYPE_SIZE:
+        result = (tmp = lhs->size_type - rhs->size_type) != 0 ? tmp :
+                (tmp = lhs->size_num - rhs->size_num) != 0 ? tmp : 0;
+        break;
+    }
+
+    return reverse ? -result : result;
+}
+
+static int cmp_name_asc(const void *l, const void *r)
+{
+    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_NAME, false);
+}
+
+static int cmp_name_desc(const void *l, const void *r)
+{
+    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_NAME, true);
+}
+
+static int cmp_size_asc(const void *l, const void *r)
+{
+    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_SIZE, false);
+}
+
+static int cmp_size_desc(const void *l, const void *r)
+{
+    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_SIZE, true);
+}
+
+static int cmp_date_asc(const void *l, const void *r)
+{
+    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_DATE, false);
+}
+
+static int cmp_date_desc(const void *l, const void *r)
+{
+    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_DATE, true);
 }
 
 static void do_fill_path_items(struct priv_panel *priv, DIR *dir)
@@ -247,7 +318,8 @@ static void do_fill_path_items(struct priv_panel *priv, DIR *dir)
     for (int i = 0; i < cache->path_item_count; ++i)
         cache->path_items[i].name += translate_offset;
 
-    qsort(cache->path_items, cache->path_item_count, sizeof(struct path_item), compare_path_item);
+    qsort(cache->path_items, cache->path_item_count,
+          sizeof(struct path_item), priv->cmp_func);
 
     item_path.len = 0;
     TA_FREEP(&item_path.start);
@@ -370,7 +442,7 @@ static bool files_init(struct ui_context *ctx, void *p)
     const char *init_dir = ui_platform_driver_vita.get_files_dir(ctx);
     priv->work_dir.len = 0;
     bstr_xappend(priv, &priv->work_dir, bstr0(init_dir));
-    fill_path_items(priv);
+    priv->cmp_func = cmp_name_asc;
     return true;
 }
 
@@ -380,8 +452,11 @@ static void files_uninit(struct ui_context *ctx)
 static void files_on_show(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    const char *font_path = ui_platform_driver_vita.get_font_path(ctx);
-    ui_render_driver_vita.font_init(ctx, &priv->cache_data.font, font_path);
+    if (!priv->cache_data.font) {
+        const char *font_path = ui_platform_driver_vita.get_font_path(ctx);
+        ui_render_driver_vita.font_init(ctx, &priv->cache_data.font, font_path);
+    }
+    fill_path_items(priv);
 }
 
 static void files_on_hide(struct ui_context *ctx)
@@ -535,6 +610,38 @@ static void do_handle_dpad_pressed(struct ui_context *ctx) {
     do_move_cursor(ctx, priv->pressed_dpad_act, count);
 }
 
+static void do_change_cmp_func(struct ui_context *ctx, int f_offset, int flip_order)
+{
+    // find compare func in the 2d array
+    bool found = false;
+    int idx_field = 0;
+    int idx_order = 0;
+    struct priv_panel *priv = ctx->priv_panel;
+    for (size_t i = 0; i < MP_ARRAY_SIZE(cmp_func_list); ++i) {
+        for (size_t j = 0; j < MP_ARRAY_SIZE(cmp_func_list[i]); ++j) {
+            if (priv->cmp_func == cmp_func_list[i][j]) {
+                found = true;
+                idx_field = i;
+                idx_order = j;
+                break;
+            }
+        }
+        if (found)
+            break;
+    }
+
+    // compare func is not changed
+    int idx_new_field = MPCLAMP(idx_field + f_offset, 0, MP_ARRAY_SIZE(cmp_func_list) - 1);
+    int idx_new_order = idx_order ^ flip_order;
+    if (found && idx_new_field == idx_field && idx_new_order == idx_order)
+        return;
+
+    priv->cmp_func = cmp_func_list[idx_new_field][idx_new_order];
+    qsort(priv->cache_data.path_items, priv->cache_data.path_item_count,
+          sizeof(struct path_item), priv->cmp_func);
+    ui_panel_common_invalidate(ctx);
+}
+
 static void files_on_key(struct ui_context *ctx, enum ui_key_code code, enum ui_key_state state)
 {
     bool done_dpad = do_handle_dpad_trigger(ctx, code, state);
@@ -550,6 +657,15 @@ static void files_on_key(struct ui_context *ctx, enum ui_key_code code, enum ui_
         break;
     case UI_KEY_CODE_VITA_VIRTUAL_CANCEL:
         pop_path(ctx);
+        break;
+    case UI_KEY_CODE_VITA_ACTION_TRIANGLE:
+        do_change_cmp_func(ctx, 0, 1);
+        break;
+    case UI_KEY_CODE_VITA_L1:
+        do_change_cmp_func(ctx, -1, 0);
+        break;
+    case UI_KEY_CODE_VITA_R1:
+        do_change_cmp_func(ctx, 1, 0);
         break;
     default:
         break;
