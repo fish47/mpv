@@ -89,6 +89,35 @@ static uint64_t get_path_stat_type(const char *path)
 
 static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
 {
+    struct priv_platform *priv = get_priv_platform(ctx);
+    priv->key_map_ext = &platform_key_map_virtual_asia;
+
+    int opt = 0;
+    char buf[PATH_MAX] = {0};
+    char *normalized = NULL;
+    while ((opt = getopt(argc, argv, "sf:d:")) != -1) {
+        switch (opt) {
+        case 'f':
+            normalized = realpath(optarg, buf);
+            if (S_ISREG(get_path_stat_type(normalized)))
+                priv->font_path = ta_strdup(priv, normalized);
+            break;
+        case 'd':
+            normalized = realpath(optarg, buf);
+            if (S_ISDIR(get_path_stat_type(normalized)))
+                priv->files_dir = ta_strdup(priv, normalized);
+            break;
+        case 's':
+            priv->key_map_ext = &platform_key_map_virtual_swap;
+            break;
+        }
+    }
+
+    if (!(priv->font_path && priv->files_dir)) {
+        printf("Usage: [-s] -f FONT_PATH -d OPEN_DIR\n");
+        return false;
+    }
+
     if (!glfwInit())
         return false;
 
@@ -114,36 +143,8 @@ static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
     glfwSetWindowCloseCallback(window, on_window_close);
     glfwSwapInterval(0);
 
-    struct priv_platform *priv = get_priv_platform(ctx);
     priv->window = window;
-    priv->key_map_ext = &platform_key_map_virtual_asia;
-
-    int opt = 0;
-    char buf[PATH_MAX] = {0};
-    char *normalized = NULL;
-    while ((opt = getopt(argc, argv, "sf:d:")) != -1) {
-        switch (opt) {
-        case 'f':
-            normalized = realpath(optarg, buf);
-            if (S_ISREG(get_path_stat_type(normalized)))
-                priv->font_path = ta_strdup(priv, normalized);
-            break;
-        case 'd':
-            normalized = realpath(optarg, buf);
-            if (S_ISDIR(get_path_stat_type(normalized)))
-                priv->files_dir = ta_strdup(priv, normalized);
-            break;
-        case 's':
-            priv->key_map_ext = &platform_key_map_virtual_swap;
-            break;
-        }
-    }
-
-    if (priv->font_path && priv->files_dir)
-        return true;
-
-    printf("Usage: [-s] -f FONT_PATH -d OPEN_DIR\n");
-    return false;
+    return true;
 }
 
 static void platform_uninit(struct ui_context *ctx)
