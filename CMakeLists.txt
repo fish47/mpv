@@ -31,7 +31,7 @@ function(_generate_source _out_var _abs_out_path _abs_script_path)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${_abs_out_dir}
         COMMAND ${_abs_script_path} ${ARGN} ${_abs_out_path})
 
-    list(APPEND _out_result ${${_out_var}} ${_abs_out_path} )
+    list(APPEND _out_result ${${_out_var}} ${_abs_out_path})
     set(${_out_var} ${_out_result} PARENT_SCOPE)
 endfunction()
 
@@ -47,40 +47,71 @@ if(NOT MPV_BUILD_EMULATOR)
     include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 endif()
 
+
 project(mpv-vita)
 
 list(APPEND mpv_sources
-    ## Audio
+    # audio
+    audio/out/internal.h
+
+    audio/aframe.h
     audio/aframe.c
+    audio/chmap.h
     audio/chmap.c
+    audio/chmap_sel.h
     audio/chmap_sel.c
+    audio/fmt-conversion.h
+    audio/fmt-conversion.c
+    audio/format.h
+    audio/format.c
     audio/decode/ad_lavc.c
     audio/filter/af_drop.c
     audio/filter/af_scaletempo2.c
+    audio/filter/af_scaletempo2_internals.h
     audio/filter/af_scaletempo2_internals.c
-    audio/fmt-conversion.c
-    audio/format.c
+    audio/out/ao.h
     audio/out/ao.c
     audio/out/ao_null.c
     audio/out/buffer.c
 
-    ## Core
+    # core
+    common/encode.h
+    common/global.h
+    common/msg_control.h
+
+    common/av_common.h
     common/av_common.c
+    common/av_log.h
     common/av_log.c
+    common/codecs.h
     common/codecs.c
+    common/common.h
     common/common.c
+    common/encode_lavc.h
     common/encode_lavc.c
+    common/msg.h
     common/msg.c
+    common/playlist.h
     common/playlist.c
+    common/recorder.h
     common/recorder.c
+    common/stats.h
     common/stats.c
+    common/tags.h
     common/tags.c
     common/version.c
 
-    ## Demuxers
-    demux/codec_tags.c
+    # demuxers
+    demux/matroska.h
+    demux/stheader.h
+
+    demux/cue.h
     demux/cue.c
+    demux/cache.h
     demux/cache.c
+    demux/codec_tags.h
+    demux/codec_tags.c
+    demux/demux.h
     demux/demux.c
     demux/demux_cue.c
     demux/demux_disc.c
@@ -93,69 +124,120 @@ list(APPEND mpv_sources
     demux/demux_playlist.c
     demux/demux_raw.c
     demux/demux_timeline.c
+    demux/ebml.h
     demux/ebml.c
+    demux/packet.h
     demux/packet.c
+    demux/timeline.h
     demux/timeline.c
 
-    ## Filters
+    # filters
+    filters/filter_internal.h
+
+    filters/f_async_queue.h
     filters/f_async_queue.c
+    filters/f_autoconvert.h
     filters/f_autoconvert.c
+    filters/f_auto_filters.h
     filters/f_auto_filters.c
+    filters/f_decoder_wrapper.h
     filters/f_decoder_wrapper.c
+    filters/f_demux_in.h
     filters/f_demux_in.c
+    filters/f_output_chain.h
     filters/f_output_chain.c
+    filters/f_swresample.h
     filters/f_swresample.c
+    filters/f_swscale.h
     filters/f_swscale.c
+    filters/f_utils.h
     filters/f_utils.c
+    filters/filter.h
     filters/filter.c
+    filters/frame.h
     filters/frame.c
+    filters/user_filters.h
     filters/user_filters.c
 
-    ## Input
+    # input
+    input/cmd.h
     input/cmd.c
+    input/event.h
     input/event.c
+    input/input.h
     input/input.c
+    input/keycodes.h
     input/keycodes.c
 
-    ## Misc
+    # misc
+    misc/ctype.h
+    misc/linked_list.h
+
+    misc/bstr.h
     misc/bstr.c
+    misc/charset_conv.h
     misc/charset_conv.c
+    misc/dispatch.h
     misc/dispatch.c
+    misc/json.h
     misc/json.c
+    misc/natural_sort.h
     misc/natural_sort.c
+    misc/node.h
     misc/node.c
+    misc/rendezvous.h
     misc/rendezvous.c
+    misc/thread_pool.h
     misc/thread_pool.c
+    misc/thread_tools.h
     misc/thread_tools.c
 
-    ## Options
+    # options
+    options/m_config.h
+
+    options/m_config_core.h
     options/m_config_core.c
+    options/m_config_frontend.h
     options/m_config_frontend.c
+    options/m_option.h
     options/m_option.c
+    options/m_property.h
     options/m_property.c
+    options/options.h
     options/options.c
+    options/parse_commandline.h
     options/parse_commandline.c
+    options/parse_configfile.h
     options/parse_configfile.c
+    options/path.h
     options/path.c
 
-    ## Player
+    # player
+    player/core.h
+
     player/audio.c
+    player/client.h
     player/client.c
+    player/command.h
     player/command.c
     player/configfiles.c
+    player/external_files.h
     player/external_files.c
     player/loadfile.c
     player/main.c
     player/misc.c
     player/osd.c
     player/playloop.c
+    player/screenshot.h
     player/screenshot.c
     player/scripting.c
     player/sub.c
     player/video.c
 
-    ## Streams
+    # streams
+    stream/cookies.h
     stream/cookies.c
+    stream/stream.h
     stream/stream.c
     stream/stream_avdevice.c
     stream/stream_cb.c
@@ -168,50 +250,90 @@ list(APPEND mpv_sources
     stream/stream_null.c
     stream/stream_slice.c
 
-    ## Subtitles
+    # subtitles
+    sub/sd.h
+    sub/osd_state.h
+
+    sub/ass_mp.h
     sub/ass_mp.c
+    sub/dec_sub.h
     sub/dec_sub.c
+    sub/draw_bmp.h
     sub/draw_bmp.c
     sub/filter_sdh.c
+    sub/img_convert.h
     sub/img_convert.c
     sub/lavc_conv.c
+    sub/osd.h
     sub/osd.c
     sub/sd_ass.c
     sub/sd_lavc.c
 
-    ## Video
+    # video
+    video/csputils.h
     video/csputils.c
-    video/decode/vd_lavc.c
+    video/fmt-conversion.h
     video/fmt-conversion.c
+    video/hwdec.h
     video/hwdec.c
+    video/image_loader.h
     video/image_loader.c
+    video/image_writer.h
     video/image_writer.c
+    video/img_format.h
     video/img_format.c
+    video/mp_image.h
     video/mp_image.c
+    video/mp_image_pool.h
     video/mp_image_pool.c
+    video/repack.h
+    video/repack.c
+    video/sws_utils.h
+    video/sws_utils.c
+    video/decode/vd_lavc.c
+    video/out/aspect.h
     video/out/aspect.c
+    video/out/bitmap_packer.h
     video/out/bitmap_packer.c
+    video/out/dither.h
     video/out/dither.c
+    video/out/dr_helper.h
     video/out/dr_helper.c
+    video/out/filter_kernels.h
     video/out/filter_kernels.c
+    video/out/vo.h
     video/out/vo.c
     video/out/vo_null.c
+    video/out/win_state.h
     video/out/win_state.c
-    video/repack.c
-    video/sws_utils.c
 
-    ## osdep
+    # os dependent
+    osdep/atomic.h
+    osdep/compiler.h
+    osdep/endian.h
+    osdep/getpid.h
+    osdep/main-fn.h
+    osdep/path.h
+    osdep/strnlen.h
+    osdep/terminal.h
+
+    osdep/io.h
     osdep/io.c
+    osdep/subprocess.h
     osdep/subprocess.c
+    osdep/threads.h
     osdep/threads.c
+    osdep/timer.h
     osdep/timer.c
 
-    ## tree_allocator
+    # tree allocator
+    ta/ta.h
     ta/ta.c
+    ta/ta_talloc.h
     ta/ta_talloc.c
     ta/ta_utils.c
 
-    ## Vita
+    # vita implementation
     audio/out/ao_vita.c
     video/out/vo_vita.c
     sub/osd_dummy.c
@@ -222,7 +344,12 @@ list(APPEND mpv_sources
     osdep/subprocess-dummy.c
     osdep/main-fn-vita.c
 
-    ## Vita UI
+    # vita UI
+    osdep/vita/ui_context.h
+    osdep/vita/ui_device.h
+    osdep/vita/ui_driver.h
+    osdep/vita/ui_panel.h
+
     osdep/vita/ui_panel_player.c
     osdep/vita/ui_panel_files.c
 )
@@ -240,6 +367,7 @@ _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/ebml_defs.inc
 _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/ebml_types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TOOLS/matroska.py
     --generate-header)
+
 
 # ffmpeg depedencies
 if(EXISTS ${MPV_FFMPEG_LIBS_DIR})
@@ -313,6 +441,7 @@ else()
     find_package(glfw3 REQUIRED)
 
     list(APPEND mpv_sources
+        osdep/vita/emulator.h
         osdep/vita/emulator_audio.c
         osdep/vita/emulator_render.c
         osdep/vita/emulator_platform.c)
