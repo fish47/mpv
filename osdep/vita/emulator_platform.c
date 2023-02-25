@@ -27,14 +27,25 @@ static const struct key_map_item platform_key_map[] = {
     { GLFW_KEY_O, UI_KEY_CODE_VITA_R1 },
     { GLFW_KEY_N, UI_KEY_CODE_VITA_START },
     { GLFW_KEY_M, UI_KEY_CODE_VITA_SELECT },
+};
+
+typedef struct key_map_item key_map_item_ext[2];
+
+static const key_map_item_ext platform_key_map_virtual_asia = {
     { GLFW_KEY_L, UI_KEY_CODE_VITA_VIRTUAL_OK },
     { GLFW_KEY_K, UI_KEY_CODE_VITA_VIRTUAL_CANCEL },
+};
+
+static const key_map_item_ext platform_key_map_virtual_swap = {
+    { GLFW_KEY_K, UI_KEY_CODE_VITA_VIRTUAL_OK },
+    { GLFW_KEY_L, UI_KEY_CODE_VITA_VIRTUAL_CANCEL },
 };
 
 struct priv_platform {
     GLFWwindow *window;
     char *files_dir;
     char *font_path;
+    const key_map_item_ext *key_map_ext;
 };
 
 static struct priv_platform *get_priv_platform(struct ui_context *ctx)
@@ -86,7 +97,8 @@ static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-    GLFWwindow *window = glfwCreateWindow(VITA_SCREEN_W, VITA_SCREEN_H, "Vita", NULL, NULL);
+    GLFWwindow *window = glfwCreateWindow(VITA_SCREEN_W, VITA_SCREEN_H,
+                                          "Vita", NULL, NULL);
     if (!window)
         return false;
 
@@ -104,11 +116,12 @@ static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
 
     struct priv_platform *priv = get_priv_platform(ctx);
     priv->window = window;
+    priv->key_map_ext = &platform_key_map_virtual_asia;
 
     int opt = 0;
     char buf[PATH_MAX] = {0};
     char *normalized = NULL;
-    while ((opt = getopt(argc, argv, "f:d:")) != -1) {
+    while ((opt = getopt(argc, argv, "sf:d:")) != -1) {
         switch (opt) {
         case 'f':
             normalized = realpath(optarg, buf);
@@ -120,13 +133,16 @@ static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
             if (S_ISDIR(get_path_stat_type(normalized)))
                 priv->files_dir = ta_strdup(priv, normalized);
             break;
+        case 's':
+            priv->key_map_ext = &platform_key_map_virtual_swap;
+            break;
         }
     }
 
     if (priv->font_path && priv->files_dir)
         return true;
 
-    printf("Usage: -f FONT_PATH -d OPEN_DIR\n");
+    printf("Usage: [-s] -f FONT_PATH -d OPEN_DIR\n");
     return false;
 }
 
@@ -143,16 +159,24 @@ static void platform_poll_events(struct ui_context *ctx)
     glfwPollEvents();
 }
 
+static void do_poll_keys(GLFWwindow *win, uint32_t *bits,
+                         const struct key_map_item *map, int count)
+{
+    for (int i = 0; i < count; ++i) {
+        int state = glfwGetKey(win, map[i].glfw_key_code);
+        if (state == GLFW_PRESS)
+            *bits |= (1 << map[i].ui_key_code);
+    }
+}
+
 static uint32_t platform_poll_keys(struct ui_context *ctx)
 {
     uint32_t bits = 0;
     struct priv_platform *priv = get_priv_platform(ctx);
-    for (int i = 0; i < MP_ARRAY_SIZE(platform_key_map); ++i) {
-        const struct key_map_item *item = &platform_key_map[i];
-        int state = glfwGetKey(priv->window, item->glfw_key_code);
-        if (state == GLFW_PRESS)
-            bits |= (1 << item->ui_key_code);
-    }
+    do_poll_keys(priv->window, &bits,
+                 platform_key_map, MP_ARRAY_SIZE(platform_key_map));
+    do_poll_keys(priv->window, &bits,
+                 *priv->key_map_ext, MP_ARRAY_SIZE(*priv->key_map_ext));
     return bits;
 }
 

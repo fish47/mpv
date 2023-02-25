@@ -589,11 +589,11 @@ static void do_move_cursor(struct ui_context *ctx, const struct dpad_act_spec *s
     ui_panel_common_invalidate(ctx);
 }
 
-static bool do_handle_dpad_trigger(struct ui_context *ctx, enum ui_key_code code, enum ui_key_state state)
+static bool do_handle_dpad_trigger(struct ui_context *ctx, struct ui_key *key)
 {
     const struct dpad_act_spec *spec = NULL;
     for (size_t i = 0; i < MP_ARRAY_SIZE(dpad_act_spec_list); ++i) {
-        if (dpad_act_spec_list[i].key == code) {
+        if (dpad_act_spec_list[i].key == key->code) {
             spec = &dpad_act_spec_list[i];
             break;
         }
@@ -603,7 +603,7 @@ static bool do_handle_dpad_trigger(struct ui_context *ctx, enum ui_key_code code
         return false;
 
     struct priv_panel *priv = ctx->priv_panel;
-    switch (state) {
+    switch (key->state) {
     case UI_KEY_STATE_DOWN:
         priv->pressed_dpad_act = spec;
         priv->presssed_dpad_start_time = ui_panel_common_get_frame_time(ctx);
@@ -667,16 +667,16 @@ static void do_change_cmp_func(struct ui_context *ctx, int f_offset, int flip_or
     ui_panel_common_invalidate(ctx);
 }
 
-static void files_on_key(struct ui_context *ctx, enum ui_key_code code, enum ui_key_state state)
+static void files_on_key(struct ui_context *ctx, struct ui_key *key)
 {
-    bool done_dpad = do_handle_dpad_trigger(ctx, code, state);
+    bool done_dpad = do_handle_dpad_trigger(ctx, key);
     if (done_dpad)
         return;
 
-    if (state != UI_KEY_STATE_DOWN)
+    if (key->state != UI_KEY_STATE_DOWN)
         return;
 
-    switch (code) {
+    switch (key->code) {
     case UI_KEY_CODE_VITA_VIRTUAL_OK:
         push_path(ctx);
         break;

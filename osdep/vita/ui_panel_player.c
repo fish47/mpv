@@ -1,5 +1,4 @@
 #include "ui_context.h"
-#include "ui_device.h"
 #include "ui_panel.h"
 #include "ta/ta.h"
 #include "libmpv/client.h"
@@ -23,11 +22,26 @@ void ui_panel_player_set_vo_data(struct ui_context *ctx, void *data)
         priv->vo_data = ta_steal(priv, data);
 }
 
-void ui_panel_player_set_vo_fns(struct ui_context *ctx, const struct ui_panel_player_vo_fns *fns)
+void ui_panel_player_set_vo_fns(struct ui_context *ctx,
+                                const struct ui_panel_player_vo_fns *fns)
 {
     struct priv_panel *priv = ui_panel_common_get_priv(ctx, &ui_panel_player);
     if (priv)
         priv->vo_fns = *fns;
+}
+
+void ui_panel_player_send_quit(struct ui_context *ctx)
+{
+    const char *args[] = { "quit", NULL };
+    struct priv_panel *priv = ctx->priv_panel;
+    mpv_command(priv->mpv, args);
+}
+
+void ui_panel_player_send_toggle(struct ui_context *ctx)
+{
+    const char *args[] = { "cycle", "pause", NULL };
+    struct priv_panel *priv = ctx->priv_panel;
+    mpv_command(priv->mpv, args);
 }
 
 static void on_mpv_wakeup(void *p)
@@ -51,7 +65,7 @@ static bool player_init(struct ui_context *ctx, void *p)
 
     struct ui_panel_player_init_params *params = p;
     if (params) {
-        const char *args[] = {"loadfile", params->path, NULL};
+        const char *args[] = { "loadfile", params->path, NULL };
         mpv_command(priv->mpv, args);
     }
     return true;
@@ -92,11 +106,11 @@ static void player_on_poll(struct ui_context *ctx)
     }
 }
 
-static void player_on_key(struct ui_context *ctx, enum ui_key_code code, enum ui_key_state state)
+static void player_on_key(struct ui_context *ctx, struct ui_key *key)
 {
     struct priv_panel *priv = ctx->priv_panel;
     if (priv->vo_fns.send_key)
-        priv->vo_fns.send_key(ctx, code, state);
+        priv->vo_fns.send_key(ctx, key);
 }
 
 const struct ui_panel ui_panel_player = {

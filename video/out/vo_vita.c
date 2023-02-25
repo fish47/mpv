@@ -3,13 +3,17 @@
 #include "input/input.h"
 #include "input/keycodes.h"
 #include "osdep/vita/ui_context.h"
-#include "osdep/vita/ui_device.h"
 #include "osdep/vita/ui_driver.h"
 #include "osdep/vita/ui_panel.h"
 #include "video/mp_image.h"
 #include "video/img_format.h"
 
-#define INVALID_KEY_CODE (-1)
+enum key_act {
+    KEY_ACT_DROP,
+    KEY_ACT_INPUT,
+    KEY_ACT_SEND_QUIT,
+    KEY_ACT_SEND_TOGGLE,
+};
 
 enum render_act {
     RENDER_ACT_INIT,
@@ -58,7 +62,8 @@ static struct ui_context *get_ui_context(struct vo *vo)
     return (struct ui_context*) vo->opts->WinID;
 }
 
-static void render_act_do_modify(struct vo *vo, enum render_act act, void *data, bool steal)
+static void render_act_do_modify(struct vo *vo, enum render_act act,
+                                 void *data, bool steal)
 {
     mp_dispatch_fn func = get_render_act_fn(act);
     if (!func)
@@ -136,7 +141,7 @@ static void do_panel_uninit(struct ui_context *ctx)
         ui_render_driver_vita.texture_uninit(ctx, &priv->video_tex);
 }
 
-static int resolve_mp_key_code(enum ui_key_code key)
+static int resolve_mp_key_code(enum ui_key_code key, enum key_act *out_act)
 {
     switch (key) {
     case UI_KEY_CODE_VITA_DPAD_LEFT:
@@ -149,12 +154,8 @@ static int resolve_mp_key_code(enum ui_key_code key)
         return MP_KEY_GAMEPAD_DPAD_DOWN;
     case UI_KEY_CODE_VITA_ACTION_SQUARE:
         return MP_KEY_GAMEPAD_ACTION_LEFT;
-    case UI_KEY_CODE_VITA_ACTION_CIRCLE:
-        return MP_KEY_GAMEPAD_ACTION_RIGHT;
     case UI_KEY_CODE_VITA_ACTION_TRIANGLE:
         return MP_KEY_GAMEPAD_ACTION_UP;
-    case UI_KEY_CODE_VITA_ACTION_CROSS:
-        return MP_KEY_GAMEPAD_ACTION_DOWN;
     case UI_KEY_CODE_VITA_L1:
         return MP_KEY_GAMEPAD_LEFT_SHOULDER;
     case UI_KEY_CODE_VITA_R1:
@@ -163,37 +164,68 @@ static int resolve_mp_key_code(enum ui_key_code key)
         return MP_KEY_GAMEPAD_START;
     case UI_KEY_CODE_VITA_SELECT:
         return MP_KEY_GAMEPAD_MENU;
+
+    // ignore any associated key bindings
+    case UI_KEY_CODE_VITA_ACTION_CIRCLE:
+    case UI_KEY_CODE_VITA_ACTION_CROSS:
+        break;
+
+    case UI_KEY_CODE_VITA_VIRTUAL_OK:
+        *out_act = KEY_ACT_SEND_TOGGLE;
+        return 0;
+    case UI_KEY_CODE_VITA_VIRTUAL_CANCEL:
+        *out_act = KEY_ACT_SEND_QUIT;
+        return 0;
+
     case UI_KEY_CODE_VITA_END:
         break;
     }
-    return INVALID_KEY_CODE;
-}
 
-static int resolve_mp_key_state(enum ui_key_state state)
-{
-    switch (state) {
-    case UI_KEY_STATE_DOWN:
-        return MP_KEY_STATE_DOWN;
-    case UI_KEY_STATE_UP:
-        return MP_KEY_STATE_UP;
-    }
+    *out_act = KEY_ACT_DROP;
     return 0;
 }
 
-static void do_panel_send_key(struct ui_context *ctx, enum ui_key_code key, enum ui_key_state state)
+static int resolve_mp_input_key(uint32_t code, enum ui_key_state state)
 {
+    switch (state) {
+    case UI_KEY_STATE_DOWN:
+        return code | MP_KEY_STATE_DOWN;
+    case UI_KEY_STATE_UP:
+        return code | MP_KEY_STATE_UP;
+    }
+
+    // it is unlikely to reach here
+    return MP_KEY_UNMAPPED;
+}
+
+static void do_panel_send_key(struct ui_context *ctx, struct ui_key *key)
+{
+    // this callback is called in the main thread
+
     struct priv_panel *priv = ui_panel_player_get_vo_data(ctx);
     if (!priv)
         return;
 
-    int code_bits = resolve_mp_key_code(key);
-    if (code_bits == INVALID_KEY_CODE)
-        return;
-
-    // input_ctx is thread-safed, it should be fine to use it duraing its lifetime
-    // if mpv or vo is destroying, main thread will be blocked, this function will not be called anymore
-    int state_bits = resolve_mp_key_state(state);
-    mp_input_put_key(priv->input_ctx, (code_bits | state_bits));
+    enum key_act act = KEY_ACT_INPUT;
+    int code = resolve_mp_key_code(key->code, &act);
+    switch (act) {
+    case KEY_ACT_DROP:
+        break;
+    case KEY_ACT_INPUT:
+        // input_ctx is thread-safed, so it is fine to use it duraing its lifetime.
+        // if mpv or vo is destroying, main thread will be blocked until finish,
+        // this function will not be called hereafter.
+        mp_input_put_key(priv->input_ctx, resolve_mp_input_key(code, key->state));
+        break;
+    case KEY_ACT_SEND_QUIT:
+        if (key->state == UI_KEY_STATE_DOWN)
+            ui_panel_player_send_quit(ctx);
+        break;
+    case KEY_ACT_SEND_TOGGLE:
+        if (key->state == UI_KEY_STATE_DOWN)
+            ui_panel_player_send_toggle(ctx);
+        break;
+    }
 }
 
 static void do_render_init_vo_driver(void *p)
@@ -252,7 +284,8 @@ static void do_render_init_texture(void *p)
 
     if (priv->video_tex)
         ui_render_driver_vita.texture_uninit(data->ctx, &priv->video_tex);
-    ui_render_driver_vita.texture_init(data->ctx, &priv->video_tex, data->fmt, data->w, data->h);
+    ui_render_driver_vita.texture_init(data->ctx, &priv->video_tex,
+                                       data->fmt, data->w, data->h);
 
     // save placement
     priv->video_src_rect = data->src;
@@ -297,7 +330,8 @@ static void do_render_update_texture(void *p)
     void *planes[MP_MAX_PLANES];
     for (int i = 0; i < MP_MAX_PLANES; ++i)
         planes[i] = image->planes[i];
-    ui_render_driver_vita.texture_upload(data->ctx, priv->video_tex, planes, image->stride, image->num_planes);
+    ui_render_driver_vita.texture_upload(data->ctx, priv->video_tex, planes,
+                                         image->stride, image->num_planes);
 }
 
 static void draw_frame(struct vo *vo, struct vo_frame *frame)

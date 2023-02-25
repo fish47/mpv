@@ -1,10 +1,13 @@
 #include "ui_device.h"
 #include "ui_driver.h"
+#include "ui_context.h"
 #include "common/common.h"
 #include "audio/out/internal.h"
 
 #include <psp2/ctrl.h>
 #include <psp2/power.h>
+#include <psp2/apputil.h>
+#include <psp2/system_param.h>
 #include <psp2/kernel/processmgr.h>
 
 extern const struct ao_driver audio_out_null;
@@ -14,15 +17,28 @@ extern const struct ao_driver audio_out_null;
 unsigned int _newlib_heap_size_user = 300 * 1024 * 1024;
 unsigned int _pthread_stack_default_user = 1 * 1024 * 1024;
 
-struct priv_platform {};
+struct priv_platform {
+    bool use_circle_enter;
+};
 
-static bool platform_init(struct ui_context *ctx)
+static struct priv_platform *get_priv_platform(struct ui_context *ctx)
 {
+    return (struct priv_platform*) ctx->priv_platform;
+}
+
+static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
+{
+    struct priv_platform *priv = get_priv_platform(ctx);
+    int enter_btn = SCE_SYSTEM_PARAM_ENTER_BUTTON_CIRCLE;
+    sceAppUtilSystemParamGetInt(SCE_SYSTEM_PARAM_ID_ENTER_BUTTON, &enter_btn);
+    priv->use_circle_enter = (enter_btn == SCE_SYSTEM_PARAM_ENTER_BUTTON_CIRCLE);
+
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
     scePowerSetArmClockFrequency(444);
     scePowerSetBusClockFrequency(222);
     scePowerSetGpuClockFrequency(222);
     scePowerSetGpuXbarClockFrequency(166);
+
     return true;
 }
 
@@ -36,6 +52,12 @@ static void platform_exit()
 
 static uint32_t platform_poll_keys(struct ui_context *ctx)
 {
+    struct priv_platform *priv = get_priv_platform(ctx);
+    uint32_t enter_bit = SCE_CTRL_CIRCLE;
+    uint32_t cancel_bit = SCE_CTRL_CROSS;
+    if (!priv->use_circle_enter)
+        MPSWAP(uint32_t, enter_bit, cancel_bit);
+
     SceCtrlData ctrl = {0};
     sceCtrlPeekBufferPositive(0, &ctrl, 1);
 
@@ -52,6 +74,8 @@ static uint32_t platform_poll_keys(struct ui_context *ctx)
     keys |= (ctrl.buttons & SCE_CTRL_R1) ? (1 << UI_KEY_CODE_VITA_R1) : 0;
     keys |= (ctrl.buttons & SCE_CTRL_START) ? (1 << UI_KEY_CODE_VITA_START) : 0;
     keys |= (ctrl.buttons & SCE_CTRL_SELECT) ? (1 << UI_KEY_CODE_VITA_SELECT) : 0;
+    keys |= (ctrl.buttons & enter_bit) ? (1 << UI_KEY_CODE_VITA_VIRTUAL_OK) : 0;
+    keys |= (ctrl.buttons & cancel_bit) ? (1 << UI_KEY_CODE_VITA_VIRTUAL_CANCEL) : 0;
     return keys;
 }
 

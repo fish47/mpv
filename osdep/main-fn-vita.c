@@ -84,8 +84,10 @@ static void handle_platform_keys(struct ui_context *ctx)
             bool pressed = key_bit & new_bits;
             enum ui_key_state state = pressed ? UI_KEY_STATE_DOWN : UI_KEY_STATE_UP;
             const struct ui_panel *panel = get_top_panel(ctx);
-            if (panel)
-                panel->on_key(ctx, i, state);
+            if (panel) {
+                struct ui_key key = { .code = i, .state = state };
+                panel->on_key(ctx, &key);
+            }
         }
     }
 

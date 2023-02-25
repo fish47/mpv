@@ -296,6 +296,7 @@ if(BUILD_VITA)
         SceAudio_stub
         ScePower_stub
         SceAppMgr_stub
+        SceAppUtil_stub
         SceDisplay_stub
         SceSysmodule_stub
         SceCommonDialog_stub)
