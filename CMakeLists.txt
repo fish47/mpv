@@ -3,14 +3,34 @@ cmake_minimum_required(VERSION 2.8)
 option(MPV_BUILD_EMULATOR "Build project for desktop to ease debugging" FALSE)
 set(MPV_FFMPEG_LIBS_DIR "" CACHE STRING "Specfiy FFMPEG static library directory")
 
-set(mpv_sources)
+# apply vitasdk toolchain setup
+if(NOT MPV_BUILD_EMULATOR)
+    if(NOT DEFINED ENV{VITASDK})
+        message(FATAL_ERROR "Please define VITASDK to point to your SDK path!")
+    endif()
+    set(CMAKE_TOOLCHAIN_FILE
+        "$ENV{VITASDK}/share/vita.toolchain.cmake"
+        CACHE PATH "toolchain file")
+    include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
+endif()
+
+set(mpv_src_files)
 set(mpv_gen_files)
-set(mpv_include_dirs)
+set(mpv_gen_dir)
+set(mpv_inc_dirs)
 set(mpv_link_libs)
 set(mpv_compile_defs)
 set(mpv_compile_flags)
 
-set(mpv_gen_dir ${CMAKE_CURRENT_BINARY_DIR}/generated_files)
+list(APPEND mpv_inc_dirs
+    osdep/vita/include
+    ${CMAKE_CURRENT_SOURCE_DIR})
+
+list(APPEND mpv_compile_flags
+    -std=gnu11)
+
+list(APPEND mpv_gen_dir
+    ${CMAKE_CURRENT_BINARY_DIR}/generated_files)
 
 include(FindPkgConfig)
 
@@ -35,22 +55,22 @@ function(_generate_source _out_var _abs_out_path _abs_script_path)
     set(${_out_var} ${_out_result} PARENT_SCOPE)
 endfunction()
 
-
-# apply vitasdk toolchain setup
-if(NOT MPV_BUILD_EMULATOR)
-    if(NOT DEFINED ENV{VITASDK})
-        message(FATAL_ERROR "Please define VITASDK to point to your SDK path!")
+function(_add_pkg_libs _out_var)
+    set(_lib_type)
+    if(BUILD_VITA)
+        set(_lib_type _STATIC)
     endif()
-    set(CMAKE_TOOLCHAIN_FILE
-        "$ENV{VITASDK}/share/vita.toolchain.cmake"
-        CACHE PATH "toolchain file")
-    include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
-endif()
 
+    set(_out_result ${${_out_var}})
+    foreach(_arg IN LISTS ARGN)
+        list(APPEND _out_result ${${_arg}${_lib_type}_LIBRARIES})
+    endforeach()
+    set(${_out_var} ${_out_result} PARENT_SCOPE)
+endfunction()
 
 project(mpv-vita)
 
-list(APPEND mpv_sources
+list(APPEND mpv_src_files
     # audio
     audio/out/internal.h
 
@@ -334,22 +354,21 @@ list(APPEND mpv_sources
     ta/ta_utils.c
 
     # vita implementation
-    audio/out/ao_vita.c
-    video/out/vo_vita.c
     sub/osd_dummy.c
     input/ipc-dummy.c
-    osdep/path-vita.c
     osdep/timer-linux.c
     osdep/terminal-dummy.c
     osdep/subprocess-dummy.c
-    osdep/main-fn-vita.c
 
-    # vita UI
+    audio/out/ao_vita.c
+    video/out/vo_vita.c
+
+    osdep/path-vita.c
+    osdep/main-fn-vita.c
     osdep/vita/ui_context.h
     osdep/vita/ui_device.h
     osdep/vita/ui_driver.h
     osdep/vita/ui_panel.h
-
     osdep/vita/ui_panel_player.c
     osdep/vita/ui_panel_files.c
 )
@@ -371,9 +390,9 @@ _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/ebml_types.h
 
 # ffmpeg depedencies
 if(EXISTS ${MPV_FFMPEG_LIBS_DIR})
-    set(_pkg_ffmpeg_inc_dirs
+    list(APPEND mpv_inc_dirs
         ${MPV_FFMPEG_LIBS_DIR}/include)
-    set(_pkg_ffmpeg_libs
+    list(APPEND mpv_link_libs
         ${MPV_FFMPEG_LIBS_DIR}/lib/libavutil.a
         ${MPV_FFMPEG_LIBS_DIR}/lib/libavcodec.a
         ${MPV_FFMPEG_LIBS_DIR}/lib/libavformat.a
@@ -390,29 +409,30 @@ else()
     pkg_check_modules(_pkg_swscale REQUIRED libswscale>=5.0.101)
     pkg_check_modules(_pkg_avfilter REQUIRED libavfilter>=7.14.100)
     pkg_check_modules(_pkg_swresample REQUIRED libswresample>=3.0.100)
-    set(_pkg_ffmpeg_inc_dirs
+    list(APPEND mpv_inc_dirs
         ${_pkg_avutil_INCLUDE_DIRS}
         ${_pkg_avcodec_INCLUDE_DIRS}
         ${_pkg_avformat_INCLUDE_DIRS}
         ${_pkg_swscale_INCLUDE_DIRS}
         ${_pkg_avfilter_INCLUDE_DIRS}
         ${_pkg_swresample_INCLUDE_DIRS})
-    set(_pkg_ffmpeg_libs
-        ${_pkg_avutil_STATIC_LIBRARIES}
-        ${_pkg_avcodec_STATIC_LIBRARIES}
-        ${_pkg_avformat_STATIC_LIBRARIES}
-        ${_pkg_swscale_STATIC_LIBRARIES}
-        ${_pkg_avfilter_STATIC_LIBRARIES}
-        ${_pkg_swresample_STATIC_LIBRARIES})
+    _add_pkg_libs(mpv_link_libs
+        _pkg_avutil
+        _pkg_avcodec
+        _pkg_avformat
+        _pkg_swscale
+        _pkg_avfilter
+        _pkg_swresample)
 endif()
 
 
 # libass depedencies
 pkg_check_modules(_pkg_ass REQUIRED libass>=0.12.2)
-
+list(APPEND mpv_inc_dirs ${_pkg_ass_INCLUDE_DIRS})
+_add_pkg_libs(mpv_link_libs _pkg_ass)
 
 if(BUILD_VITA)
-    list(APPEND mpv_sources
+    list(APPEND mpv_src_files
         osdep/vita/vita_audio.c
         osdep/vita/vita_render.c
         osdep/vita/vita_platform.c)
@@ -438,21 +458,24 @@ else()
 
     find_package(OpenAL REQUIRED)
     find_package(OpenGL REQUIRED)
+    find_package(Freetype REQUIRED)
     find_package(glfw3 REQUIRED)
 
-    list(APPEND mpv_sources
+    list(APPEND mpv_src_files
         osdep/vita/emulator.h
         osdep/vita/emulator_audio.c
         osdep/vita/emulator_render.c
         osdep/vita/emulator_platform.c)
 
-    list(APPEND mpv_include_dirs
+    list(APPEND mpv_inc_dirs
         ${OPENAL_INCLUDE_DIR}
-        ${OPENGL_INCLUDE_DIR})
+        ${OPENGL_INCLUDE_DIR}
+        ${FREETYPE_INCLUDE_DIRS})
 
     list(APPEND mpv_link_libs
         ${OPENAL_LIBRARY}
         ${OPENGL_LIBRARIES}
+        ${FREETYPE_LIBRARIES}
         glfw)
 
     list(APPEND mpv_compile_defs
@@ -463,27 +486,20 @@ endif()
 
 
 add_executable(${PROJECT_NAME}
-    ${mpv_sources}
+    ${mpv_src_files}
     ${mpv_gen_files})
 
 target_compile_options(${PROJECT_NAME} PRIVATE
-    -std=gnu11
     ${mpv_compile_flags})
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     ${mpv_compile_defs})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    osdep/vita/include
     ${mpv_gen_dir}
-    ${_pkg_ass_INCLUDE_DIRS}
-    ${_pkg_ffmpeg_inc_dirs}
-    ${mpv_include_dirs})
+    ${mpv_inc_dirs})
 
 target_link_libraries(${PROJECT_NAME}
-    ${_pkg_ass_STATIC_LIBRARIES}
-    ${_pkg_ffmpeg_libs}
     ${mpv_link_libs}
     -pthread
     m)
