@@ -1,8 +1,6 @@
 #include <pthread.h>
 
-#include "libmpv/client.h"
 #include "common/common.h"
-#include "misc/bstr.h"
 #include "osdep/timer.h"
 #include "osdep/vita/ui_context.h"
 #include "osdep/vita/ui_device.h"
