@@ -26,19 +26,29 @@
 #define LAYOUT_COMMON_ITEM_COUNT 11
 
 #define UI_COLOR_TEXT 0xffffffff
-#define UI_COLOR_CURSOR 0x722B72ff
+#define UI_COLOR_MOVABLE 0x722B72ff
 #define UI_COLOR_BLOCK 0x343434ff
 
 #define LAYOUT_MAIN_W VITA_SCREEN_W
 #define LAYOUT_MAIN_H VITA_SCREEN_H
 
-#define LAYOUT_FRAME_MAIN_PADDING_X 30
-#define LAYOUT_FRAME_MAIN_PADDING_Y 30
+#define LAYOUT_FRAME_MAIN_PADDING_X 24
+#define LAYOUT_FRAME_MAIN_PADDING_Y 24
 
 #define LAYOUT_FRAME_ITEMS_PADDING_X 20
-#define LAYOUT_FRAME_ITEMS_T (LAYOUT_MAIN_H \
-                            - LAYOUT_FRAME_MAIN_PADDING_Y \
-                            - LAYOUT_COMMON_ITEM_COUNT * LAYOUT_COMMON_ITEM_ROW_H)
+#define LAYOUT_FRAME_ITEMS_H (LAYOUT_COMMON_ITEM_COUNT * LAYOUT_COMMON_ITEM_ROW_H)
+#define LAYOUT_FRAME_ITEMS_L LAYOUT_FRAME_MAIN_PADDING_X
+#define LAYOUT_FRAME_ITEMS_R (LAYOUT_MAIN_W - LAYOUT_FRAME_MAIN_PADDING_X)
+#define LAYOUT_FRAME_ITEMS_B (LAYOUT_MAIN_H - LAYOUT_FRAME_MAIN_PADDING_Y)
+#define LAYOUT_FRAME_ITEMS_T (LAYOUT_FRAME_ITEMS_B - LAYOUT_FRAME_ITEMS_H)
+
+#define LAYOUT_FRAME_SCROLL_BAR_MARGIN_L 6
+#define LAYOUT_FRAME_SCROLL_BAR_W 8
+#define LAYOUT_FRAME_SCROLL_BAR_H LAYOUT_FRAME_ITEMS_H
+#define LAYOUT_FRAME_SCROLL_BAR_T LAYOUT_FRAME_ITEMS_T
+#define LAYOUT_FRAME_SCROLL_BAR_L (LAYOUT_FRAME_ITEMS_R - LAYOUT_FRAME_SCROLL_BAR_W)
+#define LAYOUT_FRAME_SCROLL_BAR_R LAYOUT_FRAME_ITEMS_R
+#define LAYOUT_FRAME_SCROLL_BAR_B LAYOUT_FRAME_ITEMS_B
 
 #define LAYOUT_FRAME_TITLE_T (LAYOUT_FRAME_MAIN_PADDING_Y)
 
@@ -590,6 +600,13 @@ static void files_on_hide(struct ui_context *ctx)
     cache->path_item_count = 0;
 }
 
+static bool has_scroll_bar(struct ui_context *ctx)
+{
+    struct priv_panel *priv = ctx->priv_panel;
+    struct cache_data *cache = &priv->cache_data;
+    return (cache->path_item_count > LAYOUT_COMMON_ITEM_COUNT);
+}
+
 static void do_draw_titles(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
@@ -622,18 +639,51 @@ static void do_draw_blocks(struct ui_context *ctx)
 {
     struct mp_rect rects[] = {
         {
-            .x0 = LAYOUT_FRAME_MAIN_PADDING_X,
+            .x0 = LAYOUT_FRAME_ITEMS_L,
             .y0 = LAYOUT_FRAME_TITLE_T,
-            .x1 = LAYOUT_MAIN_W - LAYOUT_FRAME_MAIN_PADDING_X,
-            .y1 = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_ROW_H
+            .x1 = LAYOUT_FRAME_ITEMS_R,
+            .y1 = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_ROW_H,
+        },
+        {
+            .x0 = LAYOUT_FRAME_SCROLL_BAR_L,
+            .y0 = LAYOUT_FRAME_SCROLL_BAR_T,
+            .x1 = LAYOUT_FRAME_SCROLL_BAR_R,
+            .y1 = LAYOUT_FRAME_SCROLL_BAR_B,
         },
     };
+
+    bool has_sb = has_scroll_bar(ctx);
+    int draw_count = MP_ARRAY_SIZE(rects);
+    if (!has_sb)
+        --draw_count;
+
     struct ui_rectangle_draw_args args = {
         .color = UI_COLOR_BLOCK,
         .rects = rects,
-        .count = MP_ARRAY_SIZE(rects),
+        .count = draw_count,
     };
     ui_render_driver_vita.draw_rectangle(ctx, &args);
+
+    if (has_sb) {
+        struct priv_panel *priv = ctx->priv_panel;
+        struct cache_data *cache = &priv->cache_data;
+        int count = cache->path_item_count;
+        int height = LAYOUT_FRAME_SCROLL_BAR_H * LAYOUT_COMMON_ITEM_COUNT / count;
+        int offset = LAYOUT_FRAME_SCROLL_BAR_H * priv->cursor_pos.top / count;
+        offset = MPMIN(offset, LAYOUT_FRAME_SCROLL_BAR_H - height);
+        struct mp_rect sb_rect = {
+            .x0 = LAYOUT_FRAME_SCROLL_BAR_L,
+            .y0 = LAYOUT_FRAME_SCROLL_BAR_T + offset,
+            .x1 = LAYOUT_FRAME_SCROLL_BAR_R,
+            .y1 = LAYOUT_FRAME_SCROLL_BAR_T + offset + height,
+        };
+        struct ui_rectangle_draw_args sb_args = {
+            .rects = &sb_rect,
+            .color = UI_COLOR_MOVABLE,
+            .count = 1,
+        };
+        ui_render_driver_vita.draw_rectangle(ctx, &sb_args);
+    }
 }
 
 static void do_draw_content(struct ui_context *ctx, int flags, int fields)
@@ -674,9 +724,13 @@ static void do_draw_content(struct ui_context *ctx, int flags, int fields)
             };
             struct ui_rectangle_draw_args rect_args = {
                 .rects = &cursor_rect,
-                .color = UI_COLOR_CURSOR,
+                .color = UI_COLOR_MOVABLE,
                 .count = 1,
             };
+
+            if (has_scroll_bar(ctx))
+                cursor_rect.x1 -= LAYOUT_FRAME_SCROLL_BAR_W + LAYOUT_FRAME_SCROLL_BAR_MARGIN_L;
+
             ui_render_driver_vita.draw_rectangle(ctx, &rect_args);
             break;
         }
