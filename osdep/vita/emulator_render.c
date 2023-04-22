@@ -567,7 +567,7 @@ static void render_texture_upload(struct ui_context *ctx, struct ui_texture *tex
 
 static float normalize_to_uv_xy(float xy, int wh)
 {
-    return xy /= wh;
+    return xy / wh;
 }
 
 static void normalize_to_rect_uv(struct gl_float_rect *in_out, int w, int h)
@@ -1004,7 +1004,8 @@ static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
     render_draw_texture_ext(ctx, &tex, cache->verts, cache->uvs, args->color, args->x, args->y, cache->count);
 }
 
-static void render_draw_rectangle(struct ui_context *ctx, struct ui_triangle_draw_args *args)
+static void render_draw_rectangle(struct ui_context *ctx,
+                                  struct ui_rectangle_draw_args *args)
 {
     struct priv_render *priv = get_priv_render(ctx);
     struct gl_program_draw_triangle *program = &priv->program_draw_triangle;

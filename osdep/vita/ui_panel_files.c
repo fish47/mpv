@@ -550,7 +550,7 @@ static void do_draw(struct ui_context *ctx, bool cursor_only, int fields)
                 .x1 = LAYOUT_ITEM_CURSOR_W,
                 .y1 = draw_top + LAYOUT_ITEM_CURSOR_H,
             };
-            struct ui_triangle_draw_args rect_args = {
+            struct ui_rectangle_draw_args rect_args = {
                 .rects = &cursor_rect,
                 .color = LAYOUT_ITEM_CURSOR_COLOR,
                 .count = 1,
@@ -650,7 +650,8 @@ static bool do_handle_dpad_trigger(struct ui_context *ctx, struct ui_key *key)
     return true;
 }
 
-static void do_handle_dpad_pressed(struct ui_context *ctx) {
+static void do_handle_dpad_pressed(struct ui_context *ctx)
+{
     struct priv_panel *priv = ctx->priv_panel;
     if (!priv->pressed_dpad_act)
         return;
