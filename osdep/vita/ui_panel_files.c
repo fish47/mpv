@@ -5,10 +5,12 @@
 #include "misc/bstr.h"
 #include "ta/ta_talloc.h"
 
-#include <stdint.h>
-#include <stdlib.h>
 #include <time.h>
 #include <dirent.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <inttypes.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -18,22 +20,52 @@
 #define PATH_UNKNOWN_SIZE "--"
 #define PATH_ESCAPED_SPACE ' '
 
-#define LAYOUT_ITEM_COUNT 10
+#define LAYOUT_COMMON_TEXT_FONT_SIZE 30
+#define LAYOUT_COMMON_ITEM_TEXT_P 30
+#define LAYOUT_COMMON_ITEM_ROW_H 40
+#define LAYOUT_COMMON_ITEM_COUNT 11
 
-#define LAYOUT_ITEM_NAME_L 40
-#define LAYOUT_ITEM_NAME_R 480
-#define LAYOUT_ITEM_SIZE_L 500
-#define LAYOUT_ITEM_DATE_L 700
-#define LAYOUT_ITEM_TEXT_T 30
-#define LAYOUT_ITEM_TEXT_FONT_SIZE 30
+#define UI_COLOR_TEXT 0xffffffff
+#define UI_COLOR_CURSOR 0x722B72ff
+#define UI_COLOR_BLOCK 0x343434ff
 
-#define LAYOUT_ITEM_CURSOR_L 0
-#define LAYOUT_ITEM_CURSOR_T 0
-#define LAYOUT_ITEM_CURSOR_W 800
-#define LAYOUT_ITEM_CURSOR_H 40
+#define LAYOUT_MAIN_W VITA_SCREEN_W
+#define LAYOUT_MAIN_H VITA_SCREEN_H
 
-#define LAYOUT_ITEM_TEXT_COLOR 0xffffffff
-#define LAYOUT_ITEM_CURSOR_COLOR 0x722B72ff
+#define LAYOUT_FRAME_MAIN_PADDING_X 30
+#define LAYOUT_FRAME_MAIN_PADDING_Y 30
+
+#define LAYOUT_FRAME_ITEMS_PADDING_X 20
+#define LAYOUT_FRAME_ITEMS_T (LAYOUT_MAIN_H \
+                            - LAYOUT_FRAME_MAIN_PADDING_Y \
+                            - LAYOUT_COMMON_ITEM_COUNT * LAYOUT_COMMON_ITEM_ROW_H)
+
+#define LAYOUT_FRAME_TITLE_T (LAYOUT_FRAME_MAIN_PADDING_Y)
+
+#define LAYOUT_ITEM_SIZE_W 130
+#define LAYOUT_ITEM_DATE_W 260
+#define LAYOUT_ITEM_NAME_W (LAYOUT_MAIN_W \
+                            - LAYOUT_FRAME_MAIN_PADDING_X * 2 \
+                            - LAYOUT_FRAME_ITEMS_PADDING_X * 2 \
+                            - LAYOUT_ITEM_SIZE_W \
+                            - LAYOUT_ITEM_DATE_W)
+
+#define LAYOUT_ITEM_NAME_L (LAYOUT_FRAME_MAIN_PADDING_X + LAYOUT_FRAME_ITEMS_PADDING_X)
+#define LAYOUT_ITEM_SIZE_L (LAYOUT_ITEM_NAME_L + LAYOUT_ITEM_NAME_W)
+#define LAYOUT_ITEM_DATE_L (LAYOUT_ITEM_SIZE_L + LAYOUT_ITEM_SIZE_W)
+
+#define LAYOUT_ITEM_NAME_CLIP_L LAYOUT_ITEM_NAME_L
+#define LAYOUT_ITEM_NAME_CLIP_R (LAYOUT_ITEM_NAME_L + LAYOUT_ITEM_NAME_W - 20)
+
+#define LAYOUT_CURSOR_L (LAYOUT_FRAME_MAIN_PADDING_X)
+#define LAYOUT_CURSOR_R (LAYOUT_MAIN_W - LAYOUT_CURSOR_L)
+#define LAYOUT_CURSOR_H LAYOUT_COMMON_ITEM_ROW_H
+
+#define UI_STRING_TITLE_NAME "Name"
+#define UI_STRING_TITLE_SIZE "Size"
+#define UI_STRING_TITLE_DATE "Date"
+#define UI_STRING_TITLE_SORT_ASC "\xe2\x96\xb2" // U+25b2
+#define UI_STRING_TITLE_SORT_DESC "\xe2\x96\xbc" // U+25bc
 
 #define DPAD_ACT_TRIGGER_DELAY_US   (600 * 1000)
 #define DPAD_ACT_REPEAT_DELAY_US    (40 * 1000)
@@ -71,23 +103,45 @@ static int cmp_size_desc(const void *l, const void *r);
 static int cmp_date_asc(const void *l, const void *r);
 static int cmp_date_desc(const void *l, const void *r);
 
+struct field_title_spec {
+    int (*cmp_func[2])(const void *pa, const void *pb);
+    char *draw_name;
+    int draw_x;
+};
+
+static const struct field_title_spec field_title_spec_list[] = {
+    {
+        .cmp_func = { cmp_name_asc, cmp_name_desc },
+        .draw_name = UI_STRING_TITLE_NAME,
+        .draw_x = LAYOUT_ITEM_NAME_L,
+    },
+    {
+        .cmp_func = { cmp_size_asc, cmp_size_desc },
+        .draw_name = UI_STRING_TITLE_SIZE,
+        .draw_x = LAYOUT_ITEM_SIZE_L,
+    },
+    {
+        .cmp_func = { cmp_date_asc, cmp_date_desc },
+        .draw_name = UI_STRING_TITLE_DATE,
+        .draw_x = LAYOUT_ITEM_DATE_L,
+    },
+};
+
 enum path_item_field {
     PATH_ITEM_FIELD_NAME = 1,
     PATH_ITEM_FIELD_SIZE = 1 << 1,
     PATH_ITEM_FIELD_DATE = 1 << 2,
 };
 
-typedef int (*cmp_func)(const void *pa, const void *pb);
-static const cmp_func cmp_func_list[][2] = {
-    { cmp_name_asc, cmp_name_desc },
-    { cmp_size_asc, cmp_size_desc },
-    { cmp_date_asc, cmp_date_desc },
-};
-
 enum path_item_flag {
     PATH_ITEM_FLAG_SANTIZIE_NAME = 1,
     PATH_ITEM_FLAG_TYPE_DIR = 1 << 1,
     PATH_ITEM_FLAG_TYPE_FILE = 1 << 2,
+};
+
+enum draw_flag {
+    DRAW_FLAG_CLIP_NAME = 1,
+    DRAW_FLAG_ONLY_CURSOR = 1 << 1,
 };
 
 struct path_item {
@@ -117,7 +171,9 @@ struct priv_panel {
     bstr work_dir;
     struct cursor_data cursor_pos;
     struct cache_data cache_data;
-    cmp_func cmp_func;
+
+    int sort_field_idx;
+    int sort_field_order;
 
     struct cursor_data *cursor_pos_stack;
     int cursor_pos_count;
@@ -179,7 +235,7 @@ static int format_size_text(uint64_t bytes, char *buf, size_t limit)
         if (bytes < spec->size) {
             spec = &size_spec_list[MPMAX(i, 1) - 1];
             uint64_t num = bytes / spec->size;
-            return snprintf(buf, limit, "%lu%s", num, spec->name);
+            return snprintf(buf, limit, "%"PRIu64"%s", num, spec->name);
         }
     }
     return 0;
@@ -192,14 +248,14 @@ static int format_date_text(struct tm *tm, char *buf, size_t limit)
                     tm->tm_hour, tm->tm_min);
 }
 
-static int resolve_path_item_flags(struct dirent *d)
+static int resolve_path_item_flags(const char *name, struct stat *s)
 {
     int flags = 0;
-    if (d->d_type & DT_DIR)
+    if (S_ISDIR(s->st_mode))
         flags |= PATH_ITEM_FLAG_TYPE_DIR;
-    if (d->d_type & DT_REG)
+    if (S_ISREG(s->st_mode))
         flags |= PATH_ITEM_FLAG_TYPE_FILE;
-    if (sanitize_path_name(d->d_name, NULL))
+    if (sanitize_path_name(name, NULL))
         flags |= PATH_ITEM_FLAG_SANTIZIE_NAME;
     return flags;
 }
@@ -302,6 +358,15 @@ static void do_pack_str(void *p, char **pool, void *s, int len, int *io_offset)
     *io_offset += request;
 }
 
+static void do_sort_path_items(struct priv_panel *priv)
+{
+    struct cache_data *cache = &priv->cache_data;
+    const struct field_title_spec *spec = &field_title_spec_list[priv->sort_field_idx];
+    qsort(cache->path_items, cache->path_item_count,
+          sizeof(struct path_item),
+          spec->cmp_func[priv->sort_field_order]);
+}
+
 static void do_fill_path_items(struct priv_panel *priv, DIR *dir)
 {
     bstr item_path = bstrdup(priv, priv->work_dir);
@@ -347,7 +412,7 @@ static void do_fill_path_items(struct priv_panel *priv, DIR *dir)
 
         // size
         int offset_size = offset;
-        int flags = resolve_path_item_flags(d);
+        int flags = resolve_path_item_flags(d->d_name, &file_stat);
         if (flags & PATH_ITEM_FLAG_TYPE_FILE) {
             int len_size = format_size_text(file_stat.st_size, buf, sizeof(buf));
             do_pack_str(priv, &cache->path_str_pool, buf, len_size, &offset);
@@ -377,8 +442,7 @@ static void do_fill_path_items(struct priv_panel *priv, DIR *dir)
                 : PATH_UNKNOWN_SIZE;
     }
 
-    qsort(cache->path_items, cache->path_item_count,
-          sizeof(struct path_item), priv->cmp_func);
+    do_sort_path_items(priv);
 
     item_path.len = 0;
     TA_FREEP(&item_path.start);
@@ -422,12 +486,12 @@ static bool cursor_pos_move(struct cursor_data *pos,
         pos->current = new_cur;
         if (pos->top > pos->current)
             pos->top = pos->current;
-        else if (pos->top < pos->current - (LAYOUT_ITEM_COUNT - 1))
-            pos->top = MPMAX(pos->current - (LAYOUT_ITEM_COUNT - 1), 0);
+        else if (pos->top < pos->current - (LAYOUT_COMMON_ITEM_COUNT - 1))
+            pos->top = MPMAX(pos->current - (LAYOUT_COMMON_ITEM_COUNT - 1), 0);
         return true;
     } else if (page_offset != 0) {
         // stop flipping to next page if we are on the last page
-        int move_count = page_offset * LAYOUT_ITEM_COUNT;
+        int move_count = page_offset * LAYOUT_COMMON_ITEM_COUNT;
         if (pos->top + move_count >= count)
             return false;
 
@@ -499,7 +563,8 @@ static bool files_init(struct ui_context *ctx, void *p)
     const char *init_dir = ui_platform_driver_vita.get_files_dir(ctx);
     priv->work_dir.len = 0;
     bstr_xappend(priv, &priv->work_dir, bstr0(init_dir));
-    priv->cmp_func = cmp_name_asc;
+    priv->sort_field_idx = 0;
+    priv->sort_field_order = 0;
     return true;
 }
 
@@ -525,7 +590,53 @@ static void files_on_hide(struct ui_context *ctx)
     cache->path_item_count = 0;
 }
 
-static void do_draw(struct ui_context *ctx, bool cursor_only, int fields)
+static void do_draw_titles(struct ui_context *ctx)
+{
+    struct priv_panel *priv = ctx->priv_panel;
+    struct cache_data *cache = &priv->cache_data;
+
+    struct ui_font_draw_args args;
+    args.size = LAYOUT_COMMON_TEXT_FONT_SIZE;
+    args.color = UI_COLOR_TEXT;
+    args.y = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_TEXT_P;
+
+    char buf[30];
+    for (size_t i = 0; i < MP_ARRAY_SIZE(field_title_spec_list); ++i) {
+        const struct field_title_spec *spec = &field_title_spec_list[i];
+        if (priv->sort_field_idx == i) {
+            const char *sign = priv->sort_field_order
+                ? UI_STRING_TITLE_SORT_ASC
+                : UI_STRING_TITLE_SORT_DESC;
+            buf[0] = 0;
+            strcat(strcat(buf, spec->draw_name), sign);
+            args.text = buf;
+        } else {
+            args.text = spec->draw_name;
+        }
+        args.x = spec->draw_x;
+        ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+    }
+}
+
+static void do_draw_blocks(struct ui_context *ctx)
+{
+    struct mp_rect rects[] = {
+        {
+            .x0 = LAYOUT_FRAME_MAIN_PADDING_X,
+            .y0 = LAYOUT_FRAME_TITLE_T,
+            .x1 = LAYOUT_MAIN_W - LAYOUT_FRAME_MAIN_PADDING_X,
+            .y1 = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_ROW_H
+        },
+    };
+    struct ui_rectangle_draw_args args = {
+        .color = UI_COLOR_BLOCK,
+        .rects = rects,
+        .count = MP_ARRAY_SIZE(rects),
+    };
+    ui_render_driver_vita.draw_rectangle(ctx, &args);
+}
+
+static void do_draw_content(struct ui_context *ctx, int flags, int fields)
 {
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
@@ -533,26 +644,37 @@ static void do_draw(struct ui_context *ctx, bool cursor_only, int fields)
         return;
 
     struct ui_font_draw_args args;
-    args.size = LAYOUT_ITEM_TEXT_FONT_SIZE;
-    args.color = LAYOUT_ITEM_TEXT_COLOR;
+    args.size = LAYOUT_COMMON_TEXT_FONT_SIZE;
+    args.color = UI_COLOR_TEXT;
 
-    int draw_top = LAYOUT_ITEM_CURSOR_T;
-    for (int i = 0; i < LAYOUT_ITEM_COUNT; ++i) {
+    int draw_top = LAYOUT_FRAME_ITEMS_T;
+    bool clip_name = (flags & DRAW_FLAG_CLIP_NAME);
+    if (clip_name) {
+        struct mp_rect rect = {
+            .x0 = LAYOUT_ITEM_NAME_CLIP_L,
+            .y0 = draw_top,
+            .x1 = LAYOUT_ITEM_NAME_CLIP_R,
+            .y1 = LAYOUT_MAIN_H,
+        };
+        ui_render_driver_vita.clip_start(ctx, &rect);
+    }
+
+    for (int i = 0; i < LAYOUT_COMMON_ITEM_COUNT; ++i) {
         int idx = priv->cursor_pos.top + i;
         if (idx >= cache->path_item_count)
             break;
 
         // cursor
-        if (cursor_only && priv->cursor_pos.current == idx) {
+        if ((flags & DRAW_FLAG_ONLY_CURSOR) && priv->cursor_pos.current == idx) {
             struct mp_rect cursor_rect = {
-                .x0 = LAYOUT_ITEM_CURSOR_L,
+                .x0 = LAYOUT_CURSOR_L,
                 .y0 = draw_top,
-                .x1 = LAYOUT_ITEM_CURSOR_W,
-                .y1 = draw_top + LAYOUT_ITEM_CURSOR_H,
+                .x1 = LAYOUT_CURSOR_R,
+                .y1 = draw_top + LAYOUT_CURSOR_H,
             };
             struct ui_rectangle_draw_args rect_args = {
                 .rects = &cursor_rect,
-                .color = LAYOUT_ITEM_CURSOR_COLOR,
+                .color = UI_COLOR_CURSOR,
                 .count = 1,
             };
             ui_render_driver_vita.draw_rectangle(ctx, &rect_args);
@@ -560,7 +682,7 @@ static void do_draw(struct ui_context *ctx, bool cursor_only, int fields)
         }
 
         struct path_item *item = &cache->path_items[idx];
-        args.y = draw_top + LAYOUT_ITEM_TEXT_T;
+        args.y = draw_top + LAYOUT_COMMON_ITEM_TEXT_P;
 
         if (fields & PATH_ITEM_FIELD_NAME) {
             args.x = LAYOUT_ITEM_NAME_L;
@@ -580,28 +702,20 @@ static void do_draw(struct ui_context *ctx, bool cursor_only, int fields)
             ui_render_driver_vita.draw_font(ctx, cache->font, &args);
         }
 
-        draw_top += LAYOUT_ITEM_CURSOR_H;
+        draw_top += LAYOUT_COMMON_ITEM_ROW_H;
     }
+
+    if (clip_name)
+        ui_render_driver_vita.clip_end(ctx);
 }
 
 static void files_on_draw(struct ui_context *ctx)
 {
-    // draw cursor
-    do_draw(ctx, true, 0);
-
-    // draw name with clipped area
-    struct mp_rect rect = {
-        .x0 = LAYOUT_ITEM_NAME_L,
-        .y0 = 0,
-        .x1 = LAYOUT_ITEM_NAME_R,
-        .y1 = VITA_SCREEN_H
-    };
-    ui_render_driver_vita.clip_start(ctx, &rect);
-    do_draw(ctx, false, PATH_ITEM_FIELD_NAME);
-    ui_render_driver_vita.clip_end(ctx);
-
-    // draw remaining fields
-    do_draw(ctx, false, PATH_ITEM_FIELD_DATE | PATH_ITEM_FIELD_SIZE);
+    do_draw_blocks(ctx);
+    do_draw_titles(ctx);
+    do_draw_content(ctx, DRAW_FLAG_ONLY_CURSOR, 0);
+    do_draw_content(ctx, DRAW_FLAG_CLIP_NAME, PATH_ITEM_FIELD_NAME);
+    do_draw_content(ctx, 0, PATH_ITEM_FIELD_DATE | PATH_ITEM_FIELD_SIZE);
 }
 
 static void do_move_cursor(struct ui_context *ctx,
@@ -669,34 +783,16 @@ static void do_handle_dpad_pressed(struct ui_context *ctx)
 
 static void do_change_cmp_func(struct ui_context *ctx, int f_offset, int flip)
 {
-    // find compare func in the 2d array
-    bool found = false;
-    int idx_field = 0;
-    int idx_order = 0;
     struct priv_panel *priv = ctx->priv_panel;
-    size_t field_count = MP_ARRAY_SIZE(cmp_func_list);
-    for (size_t i = 0; i < field_count; ++i) {
-        for (size_t j = 0; j < MP_ARRAY_SIZE(cmp_func_list[i]); ++j) {
-            if (priv->cmp_func == cmp_func_list[i][j]) {
-                found = true;
-                idx_field = i;
-                idx_order = j;
-                break;
-            }
-        }
-        if (found)
-            break;
-    }
-
-    // compare func is not changed
-    int idx_new_field = MPCLAMP(idx_field + f_offset, 0, field_count - 1);
-    int idx_new_order = idx_order ^ flip;
-    if (found && idx_new_field == idx_field && idx_new_order == idx_order)
+    size_t field_count = MP_ARRAY_SIZE(field_title_spec_list);
+    int new_idx = MPCLAMP(priv->sort_field_idx + f_offset, 0, field_count - 1);
+    int new_order = (priv->sort_field_order ^ flip);
+    if (new_idx == priv->sort_field_idx && new_order == priv->sort_field_order)
         return;
 
-    priv->cmp_func = cmp_func_list[idx_new_field][idx_new_order];
-    qsort(priv->cache_data.path_items, priv->cache_data.path_item_count,
-          sizeof(struct path_item), priv->cmp_func);
+    priv->sort_field_idx = new_idx;
+    priv->sort_field_order = new_order;
+    do_sort_path_items(priv);
     ui_panel_common_invalidate(ctx);
 }
 
