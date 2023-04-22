@@ -69,6 +69,9 @@ struct ui_render_driver {
     bool (*font_init)(struct ui_context *ctx, struct ui_font **font, const char *path);
     void (*font_uninit)(struct ui_context *ctx, struct ui_font **font);
 
+    void (*clip_start)(struct ui_context *ctx, struct mp_rect *rect);
+    void (*clip_end)(struct ui_context *ctx);
+
     void (*draw_font)(struct ui_context *ctx, struct ui_font *font,
                       struct ui_font_draw_args *args);
     void (*draw_texture)(struct ui_context *ctx, struct ui_texture *tex,

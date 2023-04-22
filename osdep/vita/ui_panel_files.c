@@ -21,6 +21,7 @@
 #define LAYOUT_ITEM_COUNT 10
 
 #define LAYOUT_ITEM_NAME_L 40
+#define LAYOUT_ITEM_NAME_R 480
 #define LAYOUT_ITEM_SIZE_L 500
 #define LAYOUT_ITEM_DATE_L 700
 #define LAYOUT_ITEM_TEXT_T 30
@@ -70,10 +71,10 @@ static int cmp_size_desc(const void *l, const void *r);
 static int cmp_date_asc(const void *l, const void *r);
 static int cmp_date_desc(const void *l, const void *r);
 
-enum cmp_field_type {
-    CMP_FIELD_TYPE_NAME,
-    CMP_FIELD_TYPE_SIZE,
-    CMP_FIELD_TYPE_DATE,
+enum path_item_field {
+    PATH_ITEM_FIELD_NAME = 1,
+    PATH_ITEM_FIELD_SIZE = 1 << 1,
+    PATH_ITEM_FIELD_DATE = 1 << 2,
 };
 
 typedef int (*cmp_func)(const void *pa, const void *pb);
@@ -204,7 +205,7 @@ static int resolve_path_item_flags(struct dirent *d)
 }
 
 static int do_cmp_path_item(const void *l, const void *r,
-                            enum cmp_field_type type, bool reverse)
+                            enum path_item_field type, bool reverse)
 {
     const struct path_item* lhs = l;
     const struct path_item* rhs = r;
@@ -218,15 +219,15 @@ static int do_cmp_path_item(const void *l, const void *r,
     int tmp = 0;
     int result = 0;
     switch (type) {
-    case CMP_FIELD_TYPE_NAME:
+    case PATH_ITEM_FIELD_NAME:
         // stdlib should be fine to handle utf8 string comparison
         result = strcmp(lhs->str_name, rhs->str_name);
         break;
-    case CMP_FIELD_TYPE_DATE:
+    case PATH_ITEM_FIELD_DATE:
         result = (lhs->path_date == rhs->path_date) ? 0
                 : (lhs->path_date < rhs->path_date) ? -1 : 1;
         break;
-    case CMP_FIELD_TYPE_SIZE:
+    case PATH_ITEM_FIELD_SIZE:
         result = (lhs->file_size == rhs->file_size) ? 0
                 : (lhs->file_size < rhs->file_size) ? -1 : 1;
         break;
@@ -237,32 +238,32 @@ static int do_cmp_path_item(const void *l, const void *r,
 
 static int cmp_name_asc(const void *l, const void *r)
 {
-    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_NAME, false);
+    return do_cmp_path_item(l, r, PATH_ITEM_FIELD_NAME, false);
 }
 
 static int cmp_name_desc(const void *l, const void *r)
 {
-    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_NAME, true);
+    return do_cmp_path_item(l, r, PATH_ITEM_FIELD_NAME, true);
 }
 
 static int cmp_size_asc(const void *l, const void *r)
 {
-    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_SIZE, false);
+    return do_cmp_path_item(l, r, PATH_ITEM_FIELD_SIZE, false);
 }
 
 static int cmp_size_desc(const void *l, const void *r)
 {
-    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_SIZE, true);
+    return do_cmp_path_item(l, r, PATH_ITEM_FIELD_SIZE, true);
 }
 
 static int cmp_date_asc(const void *l, const void *r)
 {
-    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_DATE, false);
+    return do_cmp_path_item(l, r, PATH_ITEM_FIELD_DATE, false);
 }
 
 static int cmp_date_desc(const void *l, const void *r)
 {
-    return do_cmp_path_item(l, r, CMP_FIELD_TYPE_DATE, true);
+    return do_cmp_path_item(l, r, PATH_ITEM_FIELD_DATE, true);
 }
 
 static void cursor_pos_relocate(struct priv_panel *priv, char *name)
@@ -524,7 +525,7 @@ static void files_on_hide(struct ui_context *ctx)
     cache->path_item_count = 0;
 }
 
-static void files_on_draw(struct ui_context *ctx)
+static void do_draw(struct ui_context *ctx, bool cursor_only, int fields)
 {
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
@@ -541,8 +542,8 @@ static void files_on_draw(struct ui_context *ctx)
         if (idx >= cache->path_item_count)
             break;
 
-        // cursor rect
-        if (priv->cursor_pos.current == idx) {
+        // cursor
+        if (cursor_only && priv->cursor_pos.current == idx) {
             struct mp_rect cursor_rect = {
                 .x0 = LAYOUT_ITEM_CURSOR_L,
                 .y0 = draw_top,
@@ -555,28 +556,52 @@ static void files_on_draw(struct ui_context *ctx)
                 .count = 1,
             };
             ui_render_driver_vita.draw_rectangle(ctx, &rect_args);
+            break;
         }
 
         struct path_item *item = &cache->path_items[idx];
         args.y = draw_top + LAYOUT_ITEM_TEXT_T;
 
-        // name
-        args.x = LAYOUT_ITEM_NAME_L;
-        args.text = format_name_text(priv, &cache->tmp_str_buf, item);
-        ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+        if (fields & PATH_ITEM_FIELD_NAME) {
+            args.x = LAYOUT_ITEM_NAME_L;
+            args.text = format_name_text(priv, &cache->tmp_str_buf, item);
+            ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+        }
 
-        // size
-        args.x = LAYOUT_ITEM_SIZE_L;
-        args.text = item->str_size;
-        ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+        if (fields & PATH_ITEM_FIELD_SIZE) {
+            args.x = LAYOUT_ITEM_SIZE_L;
+            args.text = item->str_size;
+            ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+        }
 
-        // date
-        args.x = LAYOUT_ITEM_DATE_L;
-        args.text = item->str_date;
-        ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+        if (fields & PATH_ITEM_FIELD_DATE) {
+            args.x = LAYOUT_ITEM_DATE_L;
+            args.text = item->str_date;
+            ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+        }
 
         draw_top += LAYOUT_ITEM_CURSOR_H;
     }
+}
+
+static void files_on_draw(struct ui_context *ctx)
+{
+    // draw cursor
+    do_draw(ctx, true, 0);
+
+    // draw name with clipped area
+    struct mp_rect rect = {
+        .x0 = LAYOUT_ITEM_NAME_L,
+        .y0 = 0,
+        .x1 = LAYOUT_ITEM_NAME_R,
+        .y1 = VITA_SCREEN_H
+    };
+    ui_render_driver_vita.clip_start(ctx, &rect);
+    do_draw(ctx, false, PATH_ITEM_FIELD_NAME);
+    ui_render_driver_vita.clip_end(ctx);
+
+    // draw remaining fields
+    do_draw(ctx, false, PATH_ITEM_FIELD_DATE | PATH_ITEM_FIELD_SIZE);
 }
 
 static void do_move_cursor(struct ui_context *ctx,

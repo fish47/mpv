@@ -1,6 +1,7 @@
 #include "emulator.h"
 #include "ui_device.h"
 #include "ui_driver.h"
+#include "common/common.h"
 #include "video/img_format.h"
 
 #include <freetype2/ft2build.h>
@@ -975,6 +976,18 @@ static void render_font_uninit(struct ui_context *ctx, struct ui_font **font)
     TA_FREEP(font);
 }
 
+static void render_clip_start(struct ui_context *ctx, struct mp_rect *rect)
+{
+    int inverted_y = VITA_SCREEN_H - rect->y1;
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(rect->x0, inverted_y, mp_rect_w(*rect), mp_rect_h(*rect));
+}
+
+static void render_clip_end(struct ui_context *ctx)
+{
+    glDisable(GL_SCISSOR_TEST);
+}
+
 static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
                              struct ui_font_draw_args *args)
 {
@@ -1039,6 +1052,9 @@ const struct ui_render_driver ui_render_driver_vita = {
 
     .font_init = render_font_init,
     .font_uninit = render_font_uninit,
+
+    .clip_start = render_clip_start,
+    .clip_end = render_clip_end,
 
     .draw_font = render_draw_font,
     .draw_texture = render_draw_texture,

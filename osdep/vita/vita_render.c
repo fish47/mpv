@@ -91,6 +91,17 @@ static void do_copy_plane(void *dst, void *src, int w, int h, int bpp,
     }
 }
 
+static void render_clip_start(struct ui_context *ctx, struct mp_rect *rect)
+{
+    vita2d_enable_clipping();
+    vita2d_set_clip_rectangle(rect->x0, rect->y0, rect->x1, rect->y1);
+}
+
+static void render_clip_end(struct ui_context *ctx)
+{
+    vita2d_disable_clipping();
+}
+
 static void render_texture_upload(struct ui_context *ctx, struct ui_texture *tex,
                                   void **data, int *strides, int planes)
 {
@@ -153,6 +164,9 @@ const struct ui_render_driver ui_render_driver_vita = {
     .texture_init = render_texture_init,
     .texture_uninit = render_texture_uninit,
     .texture_upload = render_texture_upload,
+
+    .clip_start = render_clip_start,
+    .clip_end = render_clip_end,
 
     .draw_texture = render_draw_texture,
 };
