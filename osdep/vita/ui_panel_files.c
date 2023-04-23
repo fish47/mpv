@@ -505,14 +505,15 @@ static bool cursor_pos_move(struct cursor_data *pos,
         if (pos->top + move_count >= count)
             return false;
 
-        int new_top = MPCLAMP(pos->top + move_count, 0, count - 1);
+        int max_top = MPMAX(0, count - LAYOUT_COMMON_ITEM_COUNT);
+        int new_top = MPCLAMP(pos->top + move_count, 0, max_top);
         if (new_top == pos->top)
             return false;
 
         // keep cursor top offset when page is flipped
         int delta = pos->current - pos->top;
         pos->top = new_top;
-        pos->current = MPCLAMP(new_top + delta, 0, count - 1);
+        pos->current = MPCLAMP(new_top + delta, 0, max_top);
         return true;
     }
     return false;
