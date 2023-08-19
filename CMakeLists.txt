@@ -402,9 +402,10 @@ if(EXISTS ${MPV_FFMPEG_LIBS_DIR})
         ${MPV_FFMPEG_LIBS_DIR}/lib/libswscale.a
         ${MPV_FFMPEG_LIBS_DIR}/lib/libavfilter.a
         ${MPV_FFMPEG_LIBS_DIR}/lib/libswresample.a
+        SceAudiodec_stub
+        SceVideodec_stub
         m
-        z
-        mp3lame)
+        z)
 else()
     pkg_check_modules(_pkg_ffmpeg REQUIRED
         libavutil>=56.12.100
