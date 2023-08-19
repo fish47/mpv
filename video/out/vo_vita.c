@@ -156,9 +156,9 @@ static int resolve_mp_key_code(enum ui_key_code key, enum key_act *out_act)
         return MP_KEY_GAMEPAD_ACTION_LEFT;
     case UI_KEY_CODE_VITA_ACTION_TRIANGLE:
         return MP_KEY_GAMEPAD_ACTION_UP;
-    case UI_KEY_CODE_VITA_L1:
+    case UI_KEY_CODE_VITA_TRIGGER_L:
         return MP_KEY_GAMEPAD_LEFT_SHOULDER;
-    case UI_KEY_CODE_VITA_R1:
+    case UI_KEY_CODE_VITA_TRIGGER_R:
         return MP_KEY_GAMEPAD_RIGHT_SHOULDER;
     case UI_KEY_CODE_VITA_START:
         return MP_KEY_GAMEPAD_START;

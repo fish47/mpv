@@ -70,8 +70,8 @@ static uint32_t platform_poll_keys(struct ui_context *ctx)
     keys |= (ctrl.buttons & SCE_CTRL_CIRCLE) ? (1 << UI_KEY_CODE_VITA_ACTION_CIRCLE) : 0;
     keys |= (ctrl.buttons & SCE_CTRL_TRIANGLE) ? (1 << UI_KEY_CODE_VITA_ACTION_TRIANGLE) : 0;
     keys |= (ctrl.buttons & SCE_CTRL_CROSS) ? (1 << UI_KEY_CODE_VITA_ACTION_CROSS) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_L1) ? (1 << UI_KEY_CODE_VITA_L1) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_R1) ? (1 << UI_KEY_CODE_VITA_R1) : 0;
+    keys |= (ctrl.buttons & SCE_CTRL_LTRIGGER) ? (1 << UI_KEY_CODE_VITA_TRIGGER_L) : 0;
+    keys |= (ctrl.buttons & SCE_CTRL_RTRIGGER) ? (1 << UI_KEY_CODE_VITA_TRIGGER_R) : 0;
     keys |= (ctrl.buttons & SCE_CTRL_START) ? (1 << UI_KEY_CODE_VITA_START) : 0;
     keys |= (ctrl.buttons & SCE_CTRL_SELECT) ? (1 << UI_KEY_CODE_VITA_SELECT) : 0;
     keys |= (ctrl.buttons & enter_bit) ? (1 << UI_KEY_CODE_VITA_VIRTUAL_OK) : 0;

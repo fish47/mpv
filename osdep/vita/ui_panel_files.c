@@ -870,10 +870,10 @@ static void files_on_key(struct ui_context *ctx, struct ui_key *key)
     case UI_KEY_CODE_VITA_ACTION_TRIANGLE:
         do_change_cmp_func(ctx, 0, 1);
         break;
-    case UI_KEY_CODE_VITA_L1:
+    case UI_KEY_CODE_VITA_TRIGGER_L:
         do_change_cmp_func(ctx, -1, 0);
         break;
-    case UI_KEY_CODE_VITA_R1:
+    case UI_KEY_CODE_VITA_TRIGGER_R:
         do_change_cmp_func(ctx, 1, 0);
         break;
     default:
