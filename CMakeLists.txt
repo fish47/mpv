@@ -55,17 +55,20 @@ function(_generate_source _out_var _abs_out_path _abs_script_path)
     set(${_out_var} ${_out_result} PARENT_SCOPE)
 endfunction()
 
-function(_add_pkg_libs _out_var)
+function(_add_pkg_deps _out_inc_dirs _out_link_libs)
     set(_lib_type)
     if(BUILD_VITA)
         set(_lib_type _STATIC)
     endif()
 
-    set(_out_result ${${_out_var}})
+    set(_inc_result ${${_out_inc_dirs}})
+    set(_libs_result ${${_out_link_libs}})
     foreach(_arg IN LISTS ARGN)
-        list(APPEND _out_result ${${_arg}${_lib_type}_LIBRARIES})
+        list(APPEND _inc_result ${${_arg}${_lib_type}_INCLUDE_DIRS}})
+        list(APPEND _libs_result ${${_arg}${_lib_type}_LIBRARIES})
     endforeach()
-    set(${_out_var} ${_out_result} PARENT_SCOPE)
+    set(${_out_inc_dirs} ${_inc_result} PARENT_SCOPE)
+    set(${_out_link_libs} ${_libs_result} PARENT_SCOPE)
 endfunction()
 
 project(mpv-vita)
@@ -403,33 +406,20 @@ if(EXISTS ${MPV_FFMPEG_LIBS_DIR})
         z
         mp3lame)
 else()
-    pkg_check_modules(_pkg_avutil REQUIRED libavutil>=56.12.100)
-    pkg_check_modules(_pkg_avcodec REQUIRED libavcodec>=58.12.100)
-    pkg_check_modules(_pkg_avformat REQUIRED libavformat>=58.9.100)
-    pkg_check_modules(_pkg_swscale REQUIRED libswscale>=5.0.101)
-    pkg_check_modules(_pkg_avfilter REQUIRED libavfilter>=7.14.100)
-    pkg_check_modules(_pkg_swresample REQUIRED libswresample>=3.0.100)
-    list(APPEND mpv_inc_dirs
-        ${_pkg_avutil_INCLUDE_DIRS}
-        ${_pkg_avcodec_INCLUDE_DIRS}
-        ${_pkg_avformat_INCLUDE_DIRS}
-        ${_pkg_swscale_INCLUDE_DIRS}
-        ${_pkg_avfilter_INCLUDE_DIRS}
-        ${_pkg_swresample_INCLUDE_DIRS})
-    _add_pkg_libs(mpv_link_libs
-        _pkg_avutil
-        _pkg_avcodec
-        _pkg_avformat
-        _pkg_swscale
-        _pkg_avfilter
-        _pkg_swresample)
+    pkg_check_modules(_pkg_ffmpeg REQUIRED
+        libavutil>=56.12.100
+        libavcodec>=58.12.100
+        libavformat>=58.9.100
+        libswscale>=5.0.101
+        libavfilter>=7.14.100
+        libswresample>=3.0.100)
+    _add_pkg_deps(mpv_inc_dirs mpv_link_libs _pkg_ffmpeg)
 endif()
 
 
 # libass depedencies
 pkg_check_modules(_pkg_ass REQUIRED libass>=0.12.2)
-list(APPEND mpv_inc_dirs ${_pkg_ass_INCLUDE_DIRS})
-_add_pkg_libs(mpv_link_libs _pkg_ass)
+_add_pkg_deps(mpv_inc_dirs mpv_link_libs _pkg_ass)
 
 if(BUILD_VITA)
     list(APPEND mpv_src_files
