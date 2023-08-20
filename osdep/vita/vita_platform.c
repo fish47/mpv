@@ -1,16 +1,12 @@
 #include "ui_device.h"
 #include "ui_driver.h"
 #include "ui_context.h"
-#include "common/common.h"
-#include "audio/out/internal.h"
 
 #include <psp2/ctrl.h>
 #include <psp2/power.h>
 #include <psp2/apputil.h>
 #include <psp2/system_param.h>
 #include <psp2/kernel/processmgr.h>
-
-extern const struct ao_driver audio_out_null;
 
 // special hack to increase available heap memory
 // https://github.com/bvschaik/julius/blob/master/src/platform/vita/vita.c#L21
