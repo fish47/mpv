@@ -5,12 +5,6 @@
 
 struct priv_render {};
 
-// wrap the implementation to keep structure consistency,
-// so wrapper and implementation pointer can be casted to each other.
-struct ui_texture {
-    vita2d_texture impl;
-};
-
 static bool render_init(struct ui_context *ctx)
 {
     vita2d_init();
@@ -37,11 +31,11 @@ static void render_render_end(struct ui_context *ctx)
 
 static bool do_init_texture(struct ui_texture **tex, int w, int h, SceGxmTextureFormat fmt)
 {
+    vita2d_texture **cast = (vita2d_texture**) tex;
     vita2d_texture *impl = vita2d_create_empty_texture_format(w, h, fmt);
     if (!impl)
         return false;
-
-    *tex = impl;
+    *cast = impl;
     return true;
 }
 
@@ -68,7 +62,7 @@ static bool render_texture_init(struct ui_context *ctx, struct ui_texture **tex,
 
 static void render_texture_uninit(struct ui_context *ctx, struct ui_texture **tex)
 {
-    vita2d_texture *impl = *tex;
+    vita2d_texture *impl = (vita2d_texture*) *tex;
     if (impl)
         vita2d_free_texture(impl);
     *tex = NULL;
@@ -105,7 +99,7 @@ static void render_clip_end(struct ui_context *ctx)
 static void render_texture_upload(struct ui_context *ctx, struct ui_texture *tex,
                                   void **data, int *strides, int planes)
 {
-    vita2d_texture *impl = tex;
+    vita2d_texture *impl = (vita2d_texture*) tex;
     void *tex_data = vita2d_texture_get_datap(impl);
     int tex_w = vita2d_texture_get_width(impl);
     int tex_h = vita2d_texture_get_height(impl);
@@ -143,7 +137,7 @@ static void render_draw_texture(struct ui_context *ctx, struct ui_texture *tex,
     if (!dst_w || !dst_h)
         return;
 
-    vita2d_texture *impl = tex;
+    vita2d_texture *impl = (vita2d_texture*) tex;
     float sx = (float) dst_w / tex_w;
     float sy = (float) dst_h / tex_h;
     vita2d_draw_texture_part_scale(impl,

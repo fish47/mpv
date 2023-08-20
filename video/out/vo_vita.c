@@ -59,7 +59,8 @@ static struct ui_context *get_ui_context(struct vo *vo)
 {
     // this pointer is passed as option value before MPV initialization
     // it should be valid in vo_driver's whole lifetime
-    return (struct ui_context*) vo->opts->WinID;
+    uintptr_t addr = (uintptr_t) vo->opts->WinID;
+    return (struct ui_context*) addr;
 }
 
 static void render_act_do_modify(struct vo *vo, enum render_act act,
