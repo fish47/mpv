@@ -29,7 +29,7 @@ struct ui_texture_draw_args {
 
 struct ui_rectangle_draw_args {
     struct mp_rect *rects;
-    unsigned int color;
+    unsigned int *colors;
     int count;
 };
 

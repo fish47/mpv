@@ -36,20 +36,22 @@ static const struct gl_attr_spec attr_draw_tex_pos_tex = { .name = "a_texture_po
 
 static const char *const shader_source_vert_triangle =
     "attribute vec4 a_draw_pos;"
+    "attribute vec4 a_draw_color;"
+    "varying vec4 v_color;"
     "void main() {"
     "    gl_Position = a_draw_pos;"
+    "    v_color = a_draw_color;"
     "}";
 
 static const struct gl_attr_spec attr_draw_triangle_pos = { .name = "a_draw_pos", .pos = 0 };
+static const struct gl_attr_spec attr_draw_triangle_color = { .name = "a_draw_color", .pos = 1 };
 
 static const char *const shader_source_frag_triangle =
     "precision mediump float;"
-    "uniform vec4 u_color;"
+    "varying vec4 v_color;"
     "void main() {"
-    "    gl_FragColor = u_color;"
+    "    gl_FragColor = v_color;"
     "}";
-
-static const char *uniform_draw_triangle_color = "u_color";
 
 struct gl_tex_plane_spec {
     int bpp;
@@ -148,7 +150,6 @@ struct gl_program_draw_tex {
 
 struct gl_program_draw_triangle {
     struct gl_program_data program_data;
-    GLint uniform_color;
 };
 
 struct gl_float_rect {
@@ -330,7 +331,11 @@ static bool init_program_tex(struct gl_program_draw_tex *program, const struct g
         };
     }
 
-    const struct gl_attr_spec *attrs[] = { &attr_draw_tex_pos_draw, &attr_draw_tex_pos_tex, NULL };
+    const struct gl_attr_spec *attrs[] = {
+        &attr_draw_tex_pos_draw,
+        &attr_draw_tex_pos_tex,
+        NULL,
+    };
     return init_program(&program->program_data,
                         shader_source_vert_texture, spec->shader_source_frag,
                         attrs, uniforms, count);
@@ -338,13 +343,14 @@ static bool init_program_tex(struct gl_program_draw_tex *program, const struct g
 
 static bool init_program_triangle(struct gl_program_draw_triangle *program)
 {
-    const struct gl_attr_spec *attrs[] = { &attr_draw_triangle_pos, NULL };
-    const struct gl_uniform_spec uniforms[] = {
-        { .name = uniform_draw_triangle_color, .output = &program->uniform_color },
+    const struct gl_attr_spec *attrs[] = {
+        &attr_draw_triangle_pos,
+        &attr_draw_triangle_color,
+        NULL,
     };
     return init_program(&program->program_data,
                         shader_source_vert_triangle, shader_source_frag_triangle,
-                        attrs, uniforms, 1);
+                        attrs, NULL, 0);
 }
 
 static FT_Error ftc_request_cb(FTC_FaceID face_id, FT_Library lib,
@@ -599,7 +605,14 @@ static float normalize_to_vert_offset_y(float y)
     return y / VITA_SCREEN_H * -2.0f;
 }
 
-static void *normalize_to_vec4_color(float *base, unsigned int color)
+static float *normalize_to_vec2_xy(float *base, int x, int y)
+{
+    base[0] = normalize_to_vert_x(x);
+    base[1] = normalize_to_vert_y(y);
+    return base + 2;
+}
+
+static float *normalize_to_vec4_color(float *base, unsigned int color)
 {
     // same as vita2d's color define
     base[0] = (float) ((color >> 24) & 0xff) / 0xff;
@@ -623,6 +636,28 @@ static void normalize_to_rect_from_mp_rect(struct gl_float_rect *out, struct mp_
     out->y0 = rect ? rect->y0 : 0;
     out->x1 = rect ? rect->x1 : w;
     out->y1 = rect ? rect->y1 : h;
+}
+
+static int tessellate_rects(void *buffer, void *data, int stride, int n,
+                            void (*cb)(void *out, void *data, int idx))
+{
+    uint8_t *p_out = (uint8_t*) buffer;
+    for (int i = 0; i < n; ++i) {
+        if (i > 0) {
+            cb(p_out + stride, data, i);
+            memcpy(p_out, p_out + stride, stride);
+            p_out += stride * 5;
+        } else {
+            cb(p_out, data, i);
+            p_out += stride * 4;
+        }
+
+        if (i + 1 < n) {
+            memcpy(p_out, p_out - stride, stride);
+            p_out += stride;
+        }
+    }
+    return MPMAX(n * 4 + (n - 1) * 2, 0);
 }
 
 static void *normalize_to_triangle_strip(float *out, struct gl_float_rect *rect, int i, int n, int *out_draw_count)
@@ -1005,37 +1040,41 @@ static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
     render_draw_texture_ext(ctx, &tex, cache->verts, cache->uvs, args->color, args->x, args->y, cache->count);
 }
 
+static void do_tessellate_cb_draw_rect(void *out, void *data, int idx)
+{
+    float *values = out;
+    struct ui_rectangle_draw_args *args = data;
+    struct mp_rect *rect = &args->rects[idx];
+    unsigned int color = args->colors[idx];
+    for (int i = 0; i < 4; ++i) {
+        int x = (i & 0x02) ? rect->x1 : rect->x0;
+        int y = (i & 0x01) ? rect->y1 : rect->y0;
+        values = normalize_to_vec2_xy(values, x, y);
+        values = normalize_to_vec4_color(values, color);
+    }
+}
+
 static void render_draw_rectangle(struct ui_context *ctx,
                                   struct ui_rectangle_draw_args *args)
 {
     struct priv_render *priv = get_priv_render(ctx);
-    struct gl_program_draw_triangle *program = &priv->program_draw_triangle;
 
-    int draw_count = 0;
-    float *buf_cur = priv->buffer;
-    float *base_verts = buf_cur;
-    for (int i = 0; i < args->count; ++i) {
-        struct mp_rect *origin = &args->rects[i];
-        struct gl_float_rect normalized = {
-            .x0 = origin->x0,
-            .y0 = origin->y0,
-            .x1 = origin->x1,
-            .y1 = origin->y1,
-        };
-        normalize_to_rect_vert(&normalized);
-        buf_cur = normalize_to_triangle_strip(buf_cur, &normalized, i, args->count, &draw_count);
-    }
-
+    int n_pos = 2;
+    int n_color = 4;
+    int stride = (n_pos + n_color) * sizeof(float);
+    float *p_base = (float*) priv->buffer;
+    float *p_pos = p_base;
+    float *p_color = p_base + n_pos;
+    int draw_count = tessellate_rects(p_base, args, stride, args->count, do_tessellate_cb_draw_rect);
     if (!draw_count)
         return;
 
-    float *base_color = buf_cur;
-    buf_cur = normalize_to_vec4_color(base_color, args->color);
-
+    struct gl_program_draw_triangle *program = &priv->program_draw_triangle;
     glUseProgram(program->program_data.program);
-    glVertexAttribPointer(attr_draw_triangle_pos.pos, 2, GL_FLOAT, GL_FALSE, 0, base_verts);
+    glVertexAttribPointer(attr_draw_triangle_pos.pos, n_pos, GL_FLOAT, GL_FALSE, stride, p_pos);
     glEnableVertexAttribArray(attr_draw_triangle_pos.pos);
-    glUniform4fv(program->uniform_color, 1, base_color);
+    glVertexAttribPointer(attr_draw_triangle_color.pos, n_color, GL_FLOAT, GL_FALSE, stride, p_color);
+    glEnableVertexAttribArray(attr_draw_triangle_color.pos);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, draw_count);
 }
 

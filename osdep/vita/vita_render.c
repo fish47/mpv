@@ -130,6 +130,44 @@ static void render_draw_texture(struct ui_context *ctx, struct ui_texture *tex,
                                    tex_w, tex_h, sx, sy);
 }
 
+static vita2d_color_vertex* pool_alloc_color_vertex(int count)
+{
+    size_t vert_size = sizeof(vita2d_color_vertex);
+    void *mem = vita2d_pool_memalign(count * vert_size, vert_size);
+    return (vita2d_color_vertex*) mem;
+}
+
+static void render_draw_rectangle(struct ui_context *ctx,
+                                  struct ui_rectangle_draw_args *args)
+{
+    int count = args->count * 4 + (args->count - 1) * 2;
+    vita2d_color_vertex *base = pool_alloc_color_vertex(count);
+    if (!base)
+        return;
+
+    vita2d_color_vertex *p = base;
+    for (int i = 0; i < args->count; ++i) {
+        int c = args->colors[i];
+        struct mp_rect *r = &args->rects[i];
+
+        *p++ = (vita2d_color_vertex) { .x = r->x0, .y = r->y0, .z = 0.5, .color = c };
+        if (i > 0) {
+            vita2d_color_vertex *first = p - 1;
+            *p++ = *first;
+        }
+
+        *p++ = (vita2d_color_vertex) { .x = r->x1, .y = r->y0, .z = 0.5, .color = c };
+        *p++ = (vita2d_color_vertex) { .x = r->x0, .y = r->y1, .z = 0.5, .color = c };
+        *p++ = (vita2d_color_vertex) { .x = r->x1, .y = r->y1, .z = 0.5, .color = c };
+
+        if (i + 1 < args->count) {
+            vita2d_color_vertex *last = p - 1;
+            *p++ = *last;
+        }
+    }
+    vita2d_draw_array(SCE_GXM_PRIMITIVE_TRIANGLE_STRIP, base, count);
+}
+
 const struct ui_render_driver ui_render_driver_vita = {
     .priv_size = sizeof(struct priv_render),
 
@@ -147,4 +185,5 @@ const struct ui_render_driver ui_render_driver_vita = {
     .clip_end = render_clip_end,
 
     .draw_texture = render_draw_texture,
+    .draw_rectangle = render_draw_rectangle,
 };
