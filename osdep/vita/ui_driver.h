@@ -63,8 +63,9 @@ struct ui_render_driver {
     bool (*texture_init)(struct ui_context *ctx, struct ui_texture **tex,
                          enum ui_texure_fmt fmt, int w, int h);
     void (*texture_uninit)(struct ui_context *ctx, struct ui_texture **tex);
-    void (*texture_upload)(struct ui_context *ctx, struct ui_texture *tex,
-                           void **data, int *strides, int planes);
+    void (*texture_upload)(struct ui_context *ctx,
+                           struct ui_texture *tex, int w, int h,
+                           const uint8_t **data, const int *strides, int planes);
 
     bool (*font_init)(struct ui_context *ctx, struct ui_font **font, const char *path);
     void (*font_uninit)(struct ui_context *ctx, struct ui_font **font);

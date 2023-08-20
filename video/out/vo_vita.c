@@ -327,12 +327,11 @@ static void do_render_update_texture(void *p)
     if (!priv)
         return;
 
-    struct mp_image *image = data->image;
-    void *planes[MP_MAX_PLANES];
-    for (int i = 0; i < MP_MAX_PLANES; ++i)
-        planes[i] = image->planes[i];
-    ui_render_driver_vita.texture_upload(data->ctx, priv->video_tex, planes,
-                                         image->stride, image->num_planes);
+    struct mp_image *img = data->image;
+    const uint8_t **planes = (const uint8_t**) img->planes;
+    const int *strides = (const int*) img->stride;
+    ui_render_driver_vita.texture_upload(data->ctx, priv->video_tex, img->w, img->h,
+                                         planes, strides, img->num_planes);
 }
 
 static void draw_frame(struct vo *vo, struct vo_frame *frame)

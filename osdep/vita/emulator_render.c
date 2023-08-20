@@ -485,7 +485,7 @@ static void render_texture_uninit(struct ui_context *ctx, struct ui_texture **te
     TA_FREEP(tex);
 }
 
-static void upload_texture_buffered(GLuint id, void *data,
+static void upload_texture_buffered(GLuint id, const void *data,
                                     int x, int y, int w, int h,
                                     int stride, int bpp,
                                     GLenum fmt, GLenum type,
@@ -495,9 +495,9 @@ static void upload_texture_buffered(GLuint id, void *data,
 
     int row = 0;
     int col = 0;
-    uint8_t *cur = data;
-    uint8_t *next = cur + stride;
     int row_bytes = w * bpp;
+    const uint8_t *cur = data;
+    const uint8_t *next = cur + stride;
     while (row < h) {
         // caculate readable bytes in current row
         int available_bytes = capacity;
@@ -547,8 +547,9 @@ static void upload_texture_buffered(GLuint id, void *data,
     }
 }
 
-static void render_texture_upload(struct ui_context *ctx, struct ui_texture *tex,
-                                  void **data, int *strides, int planes)
+static void render_texture_upload(struct ui_context *ctx,
+                                  struct ui_texture *tex, int w, int h,
+                                  const uint8_t **data, const int *strides, int planes)
 {
     const struct gl_tex_impl_spec *spec = get_gl_tex_impl_spec(tex->fmt);
     if (spec->num_planes != planes)
@@ -557,9 +558,9 @@ static void render_texture_upload(struct ui_context *ctx, struct ui_texture *tex
     struct priv_render *priv_render = ctx->priv_render;
     for (int i = 0; i < planes; ++i) {
         const struct gl_tex_plane_spec *plane = spec->plane_specs + i;
-        int tex_w = tex->w / plane->div;
-        int tex_h = tex->h / plane->div;
-        upload_texture_buffered(tex->ids[i], data[i], 0, 0, tex_w, tex_h,
+        int data_w = MPMIN(tex->w, w) / plane->div;
+        int data_h = MPMIN(tex->h, h) / plane->div;
+        upload_texture_buffered(tex->ids[i], data[i], 0, 0, data_w, data_h,
                                 strides[i], plane->bpp, plane->fmt, plane->type,
                                 priv_render->buffer, PRIV_BUFFER_SIZE);
     }
