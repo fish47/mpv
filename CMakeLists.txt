@@ -396,14 +396,15 @@ if(EXISTS ${MPV_FFMPEG_LIBS_DIR})
     list(APPEND mpv_inc_dirs
         ${MPV_FFMPEG_LIBS_DIR}/include)
     list(APPEND mpv_link_libs
-        ${MPV_FFMPEG_LIBS_DIR}/lib/libavutil.a
-        ${MPV_FFMPEG_LIBS_DIR}/lib/libavcodec.a
         ${MPV_FFMPEG_LIBS_DIR}/lib/libavformat.a
         ${MPV_FFMPEG_LIBS_DIR}/lib/libswscale.a
         ${MPV_FFMPEG_LIBS_DIR}/lib/libavfilter.a
         ${MPV_FFMPEG_LIBS_DIR}/lib/libswresample.a
+        ${MPV_FFMPEG_LIBS_DIR}/lib/libavcodec.a
+        ${MPV_FFMPEG_LIBS_DIR}/lib/libavutil.a
         SceAudiodec_stub
         SceVideodec_stub
+        SceCodecEngine_stub
         m
         z)
 else()
