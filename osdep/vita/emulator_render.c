@@ -594,14 +594,18 @@ static void render_texture_upload(struct ui_context *ctx,
     }
 }
 
-static float *normalize_to_vec4_color(float *base, unsigned int color)
+static void *normalize_to_vec4_color(float *base, unsigned int color)
 {
-    // same as vita2d's color define
-    base[0] = (float) ((color >> 24) & 0xff) / 0xff;
-    base[1] = (float) ((color >> 16) & 0xff) / 0xff;
-    base[2] = (float) ((color >> 8) & 0xff) / 0xff;
-    base[3] = (float) ((color >> 0) & 0xff) / 0xff;
-    return base + 4;
+    // follow the color definition of vita2d
+    float a = (float) ((color >> 24) & 0xff) / 0xff;
+    float b = (float) ((color >> 16) & 0xff) / 0xff;
+    float g = (float) ((color >> 8) & 0xff) / 0xff;
+    float r = (float) ((color >> 0) & 0xff) / 0xff;
+    base[0] = r;
+    base[1] = g;
+    base[2] = b;
+    base[3] = a;
+    return base;
 }
 
 static int tessellate_rects_get_count(int n)
@@ -661,9 +665,8 @@ static void do_render_draw_texture_ext(struct ui_context *ctx,
         glUniform1i(program->uniform_textures[i], i);
     }
 
-    float tint_color[4];
-    normalize_to_vec4_color(tint_color, tint);
-    glUniform4fv(program->uniform_tint, 1, tint_color);
+    float color_vec4[4];
+    glUniform4fv(program->uniform_tint, 1, normalize_to_vec4_color(color_vec4, tint));
     glUniform2f(program->uniform_offset, offset_x, offset_y);
     glUniformMatrix4fv(program->uniform_transform, 1, GL_FALSE, priv->normalize_matrix);
 
@@ -976,18 +979,17 @@ static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
 
 static void do_tessellate_cb_draw_rect(void *out, void *data, int idx)
 {
-    float *values = out;
     struct ui_rectangle_draw_args *args = data;
     struct mp_rect *rect = &args->rects[idx];
-    unsigned int color = args->colors[idx];
 
-    float color_values[4];
-    normalize_to_vec4_color(color_values, args->colors[idx]);
+    float color_vec4[4];
+    normalize_to_vec4_color(color_vec4, args->colors[idx]);
 
+    float *values = out;
     for (int i = 0; i < 4; ++i) {
         *values++ = (i & 0x02) ? rect->x1 : rect->x0;
         *values++ = (i & 0x01) ? rect->y1 : rect->y0;
-        memcpy(values, color_values, sizeof(float) * 4);
+        memcpy(values, color_vec4, sizeof(float) * 4);
         values += 4;
     }
 }
