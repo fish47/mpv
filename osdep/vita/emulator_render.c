@@ -8,7 +8,7 @@
 #include FT_CACHE_H
 #include FT_FREETYPE_H
 
-#define PRIV_BUFFER_SIZE        (1024 * 1024 * 4)
+#define PRIV_BUFFER_SIZE        (8 * 1024 * 1024)
 
 #define TEX_FMT_INTERNAL_A8     (1000)
 
@@ -23,28 +23,37 @@ struct gl_uniform_spec {
 };
 
 static const char *const shader_source_vert_texture =
+    "uniform vec2 u_offset;"
+    "uniform mat4 u_transform;"
     "attribute vec4 a_draw_pos;"
     "attribute vec2 a_texture_pos;"
     "varying vec2 v_texture_pos;"
     "void main() {"
-    "    gl_Position = a_draw_pos;"
+    "    gl_Position = (a_draw_pos + vec4(u_offset, 0, 0)) * u_transform;"
     "    v_texture_pos = a_texture_pos;"
     "}";
 
 static const struct gl_attr_spec attr_draw_tex_pos_draw = { .name = "a_draw_pos", .pos = 0, };
 static const struct gl_attr_spec attr_draw_tex_pos_tex = { .name = "a_texture_pos", .pos = 1, };
 
+static const char *uniform_draw_tex_tint = "u_tint";
+static const char *uniform_draw_tex_offset = "u_offset";
+static const char *uniform_draw_tex_transform = "u_transform";
+
 static const char *const shader_source_vert_triangle =
+    "uniform mat4 u_transform;"
     "attribute vec4 a_draw_pos;"
     "attribute vec4 a_draw_color;"
     "varying vec4 v_color;"
     "void main() {"
-    "    gl_Position = a_draw_pos;"
+    "    gl_Position = a_draw_pos * u_transform;"
     "    v_color = a_draw_color;"
     "}";
 
 static const struct gl_attr_spec attr_draw_triangle_pos = { .name = "a_draw_pos", .pos = 0 };
 static const struct gl_attr_spec attr_draw_triangle_color = { .name = "a_draw_color", .pos = 1 };
+
+static const char *uniform_draw_triangle_transform = "u_transform";
 
 static const char *const shader_source_frag_triangle =
     "precision mediump float;"
@@ -82,9 +91,9 @@ static const struct gl_tex_impl_spec tex_spec_a8 = {
         "precision mediump float;"
         "varying vec2 v_texture_pos;"
         "uniform sampler2D u_texture;"
-        "uniform vec4 u_tint_color;"
+        "uniform vec4 u_tint;"
         "void main() {"
-        "    gl_FragColor = texture2D(u_texture, v_texture_pos).a * u_tint_color;"
+        "    gl_FragColor = texture2D(u_texture, v_texture_pos).a * u_tint;"
         "}",
 };
 
@@ -97,9 +106,9 @@ static const struct gl_tex_impl_spec tex_spec_rgba = {
         "precision mediump float;"
         "varying vec2 v_texture_pos;"
         "uniform sampler2D u_texture;"
-        "uniform vec4 u_tint_color;"
+        "uniform vec4 u_tint;"
         "void main() {"
-        "    gl_FragColor = texture2D(u_texture, v_texture_pos) * u_tint_color;"
+        "    gl_FragColor = texture2D(u_texture, v_texture_pos) * u_tint;"
         "}",
 };
 
@@ -116,7 +125,7 @@ static const struct gl_tex_impl_spec tex_spec_yuv420 = {
         "uniform sampler2D u_texture_y;"
         "uniform sampler2D u_texture_u;"
         "uniform sampler2D u_texture_v;"
-        "uniform vec4 u_tint_color;"
+        "uniform vec4 u_tint;"
         "const vec3 c_yuv_offset = vec3(-0.0627451017, -0.501960814, -0.501960814);"
         "const mat3 c_yuv_matrix = mat3("
         "    1.1644,  1.1644,   1.1644,"
@@ -130,11 +139,9 @@ static const struct gl_tex_impl_spec tex_spec_yuv420 = {
         "        texture2D(u_texture_v, v_texture_pos).a"
         "    );"
         "    lowp vec3 rgb = c_yuv_matrix * (yuv + c_yuv_offset);"
-        "    gl_FragColor = vec4(rgb, 1) * u_tint_color;"
+        "    gl_FragColor = vec4(rgb, 1) * u_tint;"
         "}",
 };
-
-static const char *uniform_draw_tex_tint_color = "u_tint_color";
 
 struct gl_program_data {
     GLuint program;
@@ -145,18 +152,14 @@ struct gl_program_data {
 struct gl_program_draw_tex {
     struct gl_program_data program_data;
     GLint uniform_textures[MP_MAX_PLANES];
-    GLint uniform_tint_color;
+    GLint uniform_tint;
+    GLint uniform_offset;
+    GLint uniform_transform;
 };
 
 struct gl_program_draw_triangle {
     struct gl_program_data program_data;
-};
-
-struct gl_float_rect {
-    float x0;
-    float y0;
-    float x1;
-    float y1;
+    GLint uniform_transform;
 };
 
 struct freetype_lib {
@@ -177,14 +180,14 @@ struct draw_font_cache {
     int h;
     GLuint tex;
     int count;
-    struct gl_float_rect *uvs;
-    struct gl_float_rect *verts;
+    float *buffer;
     struct draw_font_cache_entry entry;
     struct draw_font_cache *next;
 };
 
 struct priv_render {
     void *buffer;
+    float normalize_matrix[16];
     struct gl_program_draw_tex program_draw_tex_a8;
     struct gl_program_draw_tex program_draw_tex_rgba;
     struct gl_program_draw_tex program_draw_tex_yuv420;
@@ -283,8 +286,7 @@ static bool load_shader(const char *source, GLenum type, GLuint *out_shader)
 static bool init_program(struct gl_program_data *program,
                          const char *vert_shader, const char *frag_shader,
                          const struct gl_attr_spec **attrs,
-                         const struct gl_uniform_spec *uniforms,
-                         int uniform_count)
+                         const struct gl_uniform_spec *uniforms)
 {
     bool succeed = true;
     succeed &= load_shader(vert_shader, GL_VERTEX_SHADER, &program->shader_vert);
@@ -304,7 +306,7 @@ static bool init_program(struct gl_program_data *program,
     if (!linked)
         goto error;
 
-    for (int i = 0; i < uniform_count; ++i) {
+    for (int i = 0; uniforms[i].name; ++i) {
         GLint uniform = glGetUniformLocation(program->program, uniforms[i].name);
         if (uniform == -1)
             goto error;
@@ -319,13 +321,14 @@ error:
 
 static bool init_program_tex(struct gl_program_draw_tex *program, const struct gl_tex_impl_spec *spec)
 {
-    struct gl_uniform_spec uniforms[1 + MP_MAX_PLANES] = {
-        { .name = uniform_draw_tex_tint_color, .output = &program->uniform_tint_color },
+    struct gl_uniform_spec uniforms[3 + MP_MAX_PLANES + 1] = {
+        { .name = uniform_draw_tex_tint, .output = &program->uniform_tint },
+        { .name = uniform_draw_tex_offset, .output = &program->uniform_offset },
+        { .name = uniform_draw_tex_transform, .output = &program->uniform_transform },
     };
 
-    int count = 1;
     for (int i = 0; i < spec->num_planes; ++i) {
-        uniforms[count++] = (struct gl_uniform_spec) {
+        uniforms[3 + i] = (struct gl_uniform_spec) {
             .name = spec->plane_specs[i].name,
             .output = &program->uniform_textures[i]
         };
@@ -338,7 +341,7 @@ static bool init_program_tex(struct gl_program_draw_tex *program, const struct g
     };
     return init_program(&program->program_data,
                         shader_source_vert_texture, spec->shader_source_frag,
-                        attrs, uniforms, count);
+                        attrs, uniforms);
 }
 
 static bool init_program_triangle(struct gl_program_draw_triangle *program)
@@ -348,9 +351,27 @@ static bool init_program_triangle(struct gl_program_draw_triangle *program)
         &attr_draw_triangle_color,
         NULL,
     };
+    struct gl_uniform_spec uniforms[2] = {
+        { .name = uniform_draw_triangle_transform, .output = &program->uniform_transform },
+    };
     return init_program(&program->program_data,
                         shader_source_vert_triangle, shader_source_frag_triangle,
-                        attrs, NULL, 0);
+                        attrs, uniforms);
+}
+
+static void make_normalize_matrix(float *matrix)
+{
+    float a = 2.0 / VITA_SCREEN_W;
+    float b = -2.0 / VITA_SCREEN_H;
+    float c = -1.0;
+    float d = 1.0;
+    float result[] = {
+        a, 0, 0, c,
+        0, b, 0, d,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+    memcpy(matrix, result, sizeof(result));
 }
 
 static FT_Error ftc_request_cb(FTC_FaceID face_id, FT_Library lib,
@@ -412,6 +433,7 @@ static bool render_init(struct ui_context *ctx)
 
     struct priv_render *priv = ctx->priv_render;
     memset(priv, 0, sizeof(struct priv_render));
+    make_normalize_matrix(priv->normalize_matrix);
     return init_program_tex(&priv->program_draw_tex_a8, &tex_spec_a8)
         && init_program_tex(&priv->program_draw_tex_rgba, &tex_spec_rgba)
         && init_program_tex(&priv->program_draw_tex_yuv420, &tex_spec_yuv420)
@@ -572,46 +594,6 @@ static void render_texture_upload(struct ui_context *ctx,
     }
 }
 
-static float normalize_to_uv_xy(float xy, int wh)
-{
-    return xy / wh;
-}
-
-static void normalize_to_rect_uv(struct gl_float_rect *in_out, int w, int h)
-{
-    in_out->x0 = normalize_to_uv_xy(in_out->x0, w);
-    in_out->y0 = normalize_to_uv_xy(in_out->y0, h);
-    in_out->x1 = normalize_to_uv_xy(in_out->x1, w);
-    in_out->y1 = normalize_to_uv_xy(in_out->y1, h);
-}
-
-static float normalize_to_vert_x(float x)
-{
-    return (x - VITA_SCREEN_W * 0.5f) / VITA_SCREEN_W * 2.0f;
-}
-
-static float normalize_to_vert_y(float y)
-{
-    return (y - VITA_SCREEN_H * 0.5f) / VITA_SCREEN_H * -2.0f;
-}
-
-static float normalize_to_vert_offset_x(float x)
-{
-    return x / VITA_SCREEN_W * 2.0f;
-}
-
-static float normalize_to_vert_offset_y(float y)
-{
-    return y / VITA_SCREEN_H * -2.0f;
-}
-
-static float *normalize_to_vec2_xy(float *base, int x, int y)
-{
-    base[0] = normalize_to_vert_x(x);
-    base[1] = normalize_to_vert_y(y);
-    return base + 2;
-}
-
 static float *normalize_to_vec4_color(float *base, unsigned int color)
 {
     // same as vita2d's color define
@@ -622,24 +604,13 @@ static float *normalize_to_vec4_color(float *base, unsigned int color)
     return base + 4;
 }
 
-static void normalize_to_rect_vert(struct gl_float_rect *in_out)
+static int tessellate_rects_get_count(int n)
 {
-    in_out->x0 = normalize_to_vert_x(in_out->x0);
-    in_out->y0 = normalize_to_vert_y(in_out->y0);
-    in_out->x1 = normalize_to_vert_x(in_out->x1);
-    in_out->y1 = normalize_to_vert_y(in_out->y1);
+    return MPMAX(n * 4 + (n - 1) * 2, 0);
 }
 
-static void normalize_to_rect_from_mp_rect(struct gl_float_rect *out, struct mp_rect *rect, float w, float h)
-{
-    out->x0 = rect ? rect->x0 : 0;
-    out->y0 = rect ? rect->y0 : 0;
-    out->x1 = rect ? rect->x1 : w;
-    out->y1 = rect ? rect->y1 : h;
-}
-
-static int tessellate_rects(void *buffer, void *data, int stride, int n,
-                            void (*cb)(void *out, void *data, int idx))
+static int do_tessellate_rects(void *buffer, void *data, int stride, int n,
+                               void (*cb)(void *out, void *data, int idx))
 {
     uint8_t *p_out = (uint8_t*) buffer;
     for (int i = 0; i < n; ++i) {
@@ -657,99 +628,31 @@ static int tessellate_rects(void *buffer, void *data, int stride, int n,
             p_out += stride;
         }
     }
-    return MPMAX(n * 4 + (n - 1) * 2, 0);
+    return tessellate_rects_get_count(n);
 }
 
-static void *normalize_to_triangle_strip(float *out, struct gl_float_rect *rect, int i, int n, int *out_draw_count)
+static void do_render_draw_texture_ext(struct ui_context *ctx,
+                                       struct ui_texture *tex,
+                                       float *buffer, unsigned int tint,
+                                       int offset_x, int offset_y, int count)
 {
-    int p = 0;
-    int draw_count = 0;
-    if (i > 0) {
-        draw_count++;
-        out[p++] = rect->x0;
-        out[p++] = rect->y0;
-    }
-
-    draw_count += 4;
-    out[p++] = rect->x0;
-    out[p++] = rect->y0;
-    out[p++] = rect->x0;
-    out[p++] = rect->y1;
-    out[p++] = rect->x1;
-    out[p++] = rect->y0;
-    out[p++] = rect->x1;
-    out[p++] = rect->y1;
-
-    if (i + 1 < n) {
-        draw_count++;
-        out[p++] = rect->x1;
-        out[p++] = rect->y1;
-    }
-
-    if (out_draw_count)
-        *out_draw_count += draw_count;
-
-    return out + p;
-}
-
-static void *normalize_to_attr_buf(void *buffer, int rect_count,
-                                   struct gl_float_rect *verts, struct gl_float_rect *uvs,
-                                   int voffset_x, int voffset_y,
-                                   float **out_verts, float **out_uvs, int *out_draw_count)
-{
-    float *buf_cur = buffer;
-    float *base_verts = buf_cur;
-    float norm_offset_x = normalize_to_vert_offset_x(voffset_x);
-    float norm_offset_y = normalize_to_vert_offset_y(voffset_y);
-    for (int i = 0; i < rect_count; ++i) {
-        struct gl_float_rect transformed = verts[i];
-        transformed.x0 += norm_offset_x;
-        transformed.y0 += norm_offset_y;
-        transformed.x1 += norm_offset_x;
-        transformed.y1 += norm_offset_y;
-        buf_cur = normalize_to_triangle_strip(buf_cur, &transformed, i, rect_count, NULL);
-    }
-
-    int draw_count = 0;
-    float *base_uvs = buf_cur;
-    for (int i = 0; i < rect_count; ++i)
-        buf_cur = normalize_to_triangle_strip(buf_cur, &uvs[i], i, rect_count, &draw_count);
-
-    if (out_verts)
-        *out_verts = base_verts;
-    if (out_uvs)
-        *out_uvs = base_uvs;
-    if (out_draw_count)
-        *out_draw_count = draw_count;
-
-    return buf_cur;
-}
-
-static void render_draw_texture_ext(struct ui_context *ctx, struct ui_texture *tex,
-                                    struct gl_float_rect *verts, struct gl_float_rect *uvs,
-                                    int tint, int voffset_x, int voffset_y, int rect_count)
-{
-    const struct gl_tex_impl_spec *spec = get_gl_tex_impl_spec(tex->fmt);
-    if (!spec)
-        return;
-
     struct priv_render *priv = get_priv_render(ctx);
     struct gl_program_draw_tex *program = get_gl_program_draw_tex(priv, tex->fmt);
     if (!program)
         return;
 
-    int draw_count = 0;
-    float *buf_uvs = NULL;
-    float *buf_verts = NULL;
-    normalize_to_attr_buf(priv->buffer, rect_count, verts, uvs,
-                          voffset_x, voffset_y, &buf_verts, &buf_uvs, &draw_count);
-    if (!draw_count)
+    const struct gl_tex_impl_spec *spec = get_gl_tex_impl_spec(tex->fmt);
+    if (!spec)
         return;
 
+    float *verts = buffer;
+    float *uvs = buffer + 2;
+    int stride = 4 * sizeof(float);
+
     glUseProgram(program->program_data.program);
-    glVertexAttribPointer(attr_draw_tex_pos_draw.pos, 2, GL_FLOAT, GL_FALSE, 0, buf_verts);
+    glVertexAttribPointer(attr_draw_tex_pos_draw.pos, 2, GL_FLOAT, GL_FALSE, stride, verts);
     glEnableVertexAttribArray(attr_draw_tex_pos_draw.pos);
-    glVertexAttribPointer(attr_draw_tex_pos_tex.pos, 2, GL_FLOAT, GL_FALSE, 0, buf_uvs);
+    glVertexAttribPointer(attr_draw_tex_pos_tex.pos, 2, GL_FLOAT, GL_FALSE, stride, uvs);
     glEnableVertexAttribArray(attr_draw_tex_pos_tex.pos);
 
     for (int i = 0; i < spec->num_planes; ++i) {
@@ -760,24 +663,51 @@ static void render_draw_texture_ext(struct ui_context *ctx, struct ui_texture *t
 
     float tint_color[4];
     normalize_to_vec4_color(tint_color, tint);
-    glUniform4fv(program->uniform_tint_color, 1, tint_color);
+    glUniform4fv(program->uniform_tint, 1, tint_color);
+    glUniform2f(program->uniform_offset, offset_x, offset_y);
+    glUniformMatrix4fv(program->uniform_transform, 1, GL_FALSE, priv->normalize_matrix);
 
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, draw_count);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, count);
+}
+
+static void do_tessellate_cb_draw_texture(void *out, void *data, int idx)
+{
+    void **pack = data;
+    struct mp_rect *vert = pack[0];
+    struct mp_rect *uv = pack[1];
+    int *p_w = pack[2];
+    int *p_h = pack[3];
+    float *values = out;
+    vert += idx;
+    uv += idx;
+    for (int i = 0; i < 4; ++i) {
+        *values++ = (i & 0x02) ? vert->x1 : vert->x0;
+        *values++ = (i & 0x01) ? vert->y1 : vert->y0;
+        *values++ = (float) ((i & 0x02) ? uv->x1 : uv->x0) / *p_w;
+        *values++ = (float) ((i & 0x01) ? uv->y1 : uv->y0) / *p_h;
+    }
+}
+
+static int do_tessellate_texture_rects(void *buffer,
+                                       struct mp_rect *verts,
+                                       struct mp_rect *uvs,
+                                       int tex_w, int tex_h, int n)
+{
+    int stride = 4 * sizeof(float);
+    void *pack[] = { verts, uvs, &tex_w, &tex_h };
+    return do_tessellate_rects(buffer, pack, stride, n, do_tessellate_cb_draw_texture);
 }
 
 static void render_draw_texture(struct ui_context *ctx,
                                 struct ui_texture *tex,
                                 struct ui_texture_draw_args *args)
 {
-    struct gl_float_rect uvs;
-    normalize_to_rect_from_mp_rect(&uvs, args->src, tex->w, tex->h);
-    normalize_to_rect_uv(&uvs, tex->w, tex->h);
-
-    struct gl_float_rect verts;
-    normalize_to_rect_from_mp_rect(&verts, args->dst, VITA_SCREEN_W, VITA_SCREEN_H);
-    normalize_to_rect_vert(&verts);
-
-    render_draw_texture_ext(ctx, tex, &verts, &uvs, -1, 0, 0, 1);
+    struct priv_render *priv = get_priv_render(ctx);
+    struct mp_rect uv_default = { .x0 = 0, .y0 = 0, .x1 = tex->w, .y1 = tex->h };
+    struct mp_rect *p_uv = args->src ? args->src : &uv_default;
+    int count = do_tessellate_texture_rects(priv->buffer, args->dst, p_uv, tex->w, tex->h, 1);
+    if (count)
+        do_render_draw_texture_ext(ctx, tex, priv->buffer, -1, 0, 0, count);
 }
 
 static void font_cache_free_all(struct draw_font_cache **head)
@@ -869,60 +799,49 @@ static void font_cache_iterate(struct ui_context *ctx,
     }
 }
 
-struct cb_args_get_size {
-    int w;
-    int h;
-    int count;
-};
-
 static void font_cache_cb_get_size(FT_BitmapGlyph glyph, void *p)
 {
-    struct cb_args_get_size *args = p;
-    ++args->count;
-    args->w += glyph->bitmap.width;
-    args->h = MPMAX(args->h, (int) glyph->bitmap.rows);
+    void **pack = p;
+    int *p_w = pack[0];
+    int *p_h = pack[1];
+    int *p_count = pack[2];
+    (*p_count)++;
+    *p_w += glyph->bitmap.width;
+    *p_h = MPMAX(*p_h, (int) glyph->bitmap.rows);
 }
-
-struct cb_args_build_text {
-    struct ui_context *ctx;
-    struct gl_float_rect *uvs;
-    struct gl_float_rect *verts;
-    GLuint tex_id;
-    int tex_w;
-    int tex_h;
-
-    int index;
-    int tex_offset;
-    int vert_offset;
-};
 
 static void font_cache_cb_build_text(FT_BitmapGlyph glyph, void *p)
 {
-    struct cb_args_build_text *args = p;
-    struct priv_render *priv = args->ctx->priv_render;
+    void **pack = p;
+    struct priv_render *priv = pack[0];
+    struct mp_rect *p_verts = pack[1];
+    struct mp_rect *p_uvs = pack[2];
+    struct ui_texture *tex = pack[3];
+    int *p_idx = pack[4];
+    int *p_tex_offset = pack[5];
+    int *p_vert_offset = pack[6];
+
     int glyph_w = glyph->bitmap.width;
     int glyph_h = glyph->bitmap.rows;
-    upload_texture_buffered(args->tex_id, glyph->bitmap.buffer,
-                            args->tex_offset, 0, glyph_w, glyph_h, glyph->bitmap.pitch, 1,
+    upload_texture_buffered(tex->ids[0], glyph->bitmap.buffer,
+                            *p_tex_offset, 0, glyph_w, glyph_h, glyph->bitmap.pitch, 1,
                             GL_ALPHA, GL_UNSIGNED_BYTE, priv->buffer, PRIV_BUFFER_SIZE);
 
-    struct gl_float_rect *uv = &args->uvs[args->index];
-    uv->x0 = args->tex_offset;
+    struct mp_rect *uv = &p_uvs[*p_idx];
+    uv->x0 = *p_tex_offset;
     uv->y0 = 0;
     uv->x1 = uv->x0 + glyph_w;
     uv->y1 = uv->y0 + glyph_h;
 
-    struct gl_float_rect *vert = &args->verts[args->index];
-    vert->x0 = args->vert_offset + glyph->left;
+    struct mp_rect *vert = &p_verts[*p_idx];
+    vert->x0 = *p_vert_offset + glyph->left;
     vert->y0 = -glyph->top;
     vert->x1 = vert->x0 + glyph_w;
     vert->y1 = vert->y0 + glyph_h;
 
-    args->index++;
-    args->tex_offset += glyph_w;
-    args->vert_offset += (glyph->root.advance.x >> 16);
-    normalize_to_rect_uv(uv, args->tex_w, args->tex_h);
-    normalize_to_rect_vert(vert);
+    (*p_idx)++;
+    *p_tex_offset += glyph_w;
+    *p_vert_offset += (glyph->root.advance.x >> 16);
 }
 
 static void font_cache_destroy(void *p)
@@ -956,34 +875,49 @@ static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
         return cache2;
 
     // calculate text texture size
-    struct cb_args_get_size args_get_size = {0};
-    font_cache_iterate(ctx, font, args, font_cache_cb_get_size, &args_get_size);
-    if (!args_get_size.w || !args_get_size.h)
+    int tex_w = 0;
+    int tex_h = 0;
+    int glyph_count = 0;
+    void *pack_get_size[] = { &tex_w, &tex_h, &glyph_count };
+    font_cache_iterate(ctx, font, args, font_cache_cb_get_size, pack_get_size);
+    if (!tex_w || !tex_h)
         return NULL;
 
-    // calculate glyph draw position
-    struct cb_args_build_text args_build_text = {
-        .ctx = ctx,
-        .uvs = ta_new_array(NULL, struct gl_float_rect, args_get_size.count),
-        .verts = ta_new_array(NULL, struct gl_float_rect, args_get_size.count),
-        .tex_id = create_texture(args_get_size.w, args_get_size.h, GL_ALPHA, GL_UNSIGNED_BYTE),
-        .tex_w = args_get_size.w,
-        .tex_h = args_get_size.h,
-        .index = 0,
-        .tex_offset = 0,
-        .vert_offset = 0,
+    // calculate glyph draw position and update texture
+    GLuint tex_id = create_texture(tex_w, tex_h, GL_ALPHA, GL_UNSIGNED_BYTE);
+    struct mp_rect *vert_rects = ta_new_array(NULL, struct mp_rect, glyph_count);
+    struct mp_rect *uv_rects = ta_new_array(NULL, struct mp_rect, glyph_count);
+    struct ui_texture tex = {
+        .fmt = TEX_FMT_INTERNAL_A8,
+        .w = tex_w,
+        .h = tex_h,
+        .ids = { tex_id },
     };
-    font_cache_iterate(ctx, font, args, font_cache_cb_build_text, &args_build_text);
+    int build_idx = 0;
+    int build_off_tex = 0;
+    int build_off_vert = 0;
+    void *pack_build_text[] = {
+        priv, vert_rects, uv_rects, &tex,
+        &build_idx, &build_off_tex, &build_off_vert
+    };
+    font_cache_iterate(ctx, font, args, font_cache_cb_build_text, pack_build_text);
+
+    // calculate vertices and texture coordinates
+    int stride = 4 * sizeof(float);
+    int draw_count = tessellate_rects_get_count(glyph_count);
+    float *buffer = ta_alloc_size(NULL, draw_count * stride);
+    do_tessellate_texture_rects(buffer, vert_rects, uv_rects, tex_w, tex_h, glyph_count);
+    TA_FREEP(&vert_rects);
+    TA_FREEP(&uv_rects);
 
     struct draw_font_cache *cache3 = ta_new_ptrtype(priv, cache3);
     ta_set_destructor(cache3, font_cache_destroy);
     *cache3 = (struct draw_font_cache) {
-        .w = args_get_size.w,
-        .h = args_get_size.h,
-        .tex = args_build_text.tex_id,
-        .uvs = ta_steal(cache3, args_build_text.uvs),
-        .verts = ta_steal(cache3, args_build_text.verts),
-        .count = args_get_size.count,
+        .w = tex_w,
+        .h = tex_h,
+        .tex = tex_id,
+        .buffer = ta_steal(cache3, buffer),
+        .count = draw_count,
         .entry = {
             .font_id = font->font_id,
             .font_size = args->size,
@@ -1037,7 +971,7 @@ static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
         .h = cache->h,
         .ids = { cache->tex },
     };
-    render_draw_texture_ext(ctx, &tex, cache->verts, cache->uvs, args->color, args->x, args->y, cache->count);
+    do_render_draw_texture_ext(ctx, &tex, cache->buffer, args->color, args->x, args->y, cache->count);
 }
 
 static void do_tessellate_cb_draw_rect(void *out, void *data, int idx)
@@ -1046,11 +980,15 @@ static void do_tessellate_cb_draw_rect(void *out, void *data, int idx)
     struct ui_rectangle_draw_args *args = data;
     struct mp_rect *rect = &args->rects[idx];
     unsigned int color = args->colors[idx];
+
+    float color_values[4];
+    normalize_to_vec4_color(color_values, args->colors[idx]);
+
     for (int i = 0; i < 4; ++i) {
-        int x = (i & 0x02) ? rect->x1 : rect->x0;
-        int y = (i & 0x01) ? rect->y1 : rect->y0;
-        values = normalize_to_vec2_xy(values, x, y);
-        values = normalize_to_vec4_color(values, color);
+        *values++ = (i & 0x02) ? rect->x1 : rect->x0;
+        *values++ = (i & 0x01) ? rect->y1 : rect->y0;
+        memcpy(values, color_values, sizeof(float) * 4);
+        values += 4;
     }
 }
 
@@ -1065,8 +1003,8 @@ static void render_draw_rectangle(struct ui_context *ctx,
     float *p_base = (float*) priv->buffer;
     float *p_pos = p_base;
     float *p_color = p_base + n_pos;
-    int draw_count = tessellate_rects(p_base, args, stride, args->count, do_tessellate_cb_draw_rect);
-    if (!draw_count)
+    int count = do_tessellate_rects(p_base, args, stride, args->count, do_tessellate_cb_draw_rect);
+    if (!count)
         return;
 
     struct gl_program_draw_triangle *program = &priv->program_draw_triangle;
@@ -1075,7 +1013,8 @@ static void render_draw_rectangle(struct ui_context *ctx,
     glEnableVertexAttribArray(attr_draw_triangle_pos.pos);
     glVertexAttribPointer(attr_draw_triangle_color.pos, n_color, GL_FLOAT, GL_FALSE, stride, p_color);
     glEnableVertexAttribArray(attr_draw_triangle_color.pos);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, draw_count);
+    glUniformMatrix4fv(program->uniform_transform, 1, GL_FALSE, priv->normalize_matrix);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, count);
 }
 
 const struct ui_render_driver ui_render_driver_vita = {
