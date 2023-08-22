@@ -181,11 +181,6 @@ static uint32_t platform_poll_keys(struct ui_context *ctx)
     return bits;
 }
 
-static const char *platform_get_font_path(struct ui_context *ctx)
-{
-    return get_priv_platform(ctx)->font_path;
-}
-
 static const char *platform_get_files_dir(struct ui_context *ctx)
 {
     return get_priv_platform(ctx)->files_dir;
@@ -198,12 +193,16 @@ const struct ui_platform_driver ui_platform_driver_vita = {
     .exit = NULL,
     .poll_events = platform_poll_events,
     .poll_keys = platform_poll_keys,
-    .get_font_path = platform_get_font_path,
     .get_files_dir = platform_get_files_dir,
 };
 
 GLFWwindow *emulator_get_window(struct ui_context *ctx)
 {
     return get_priv_platform(ctx)->window;
+}
+
+const char *emulator_get_font_path(struct ui_context *ctx)
+{
+    return get_priv_platform(ctx)->font_path;
 }
 

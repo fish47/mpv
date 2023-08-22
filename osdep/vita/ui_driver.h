@@ -40,7 +40,6 @@ struct ui_platform_driver {
     void (*exit)();
     void (*poll_events)(struct ui_context *ctx);
     uint32_t (*poll_keys)(struct ui_context *ctx);
-    const char* (*get_font_path)(struct ui_context *ctx);
     const char* (*get_files_dir)(struct ui_context *ctx);
 };
 
@@ -67,7 +66,7 @@ struct ui_render_driver {
                            struct ui_texture *tex, int w, int h,
                            const uint8_t **data, const int *strides, int planes);
 
-    bool (*font_init)(struct ui_context *ctx, struct ui_font **font, const char *path);
+    bool (*font_init)(struct ui_context *ctx, struct ui_font **font);
     void (*font_uninit)(struct ui_context *ctx, struct ui_font **font);
 
     void (*clip_start)(struct ui_context *ctx, struct mp_rect *rect);

@@ -582,10 +582,8 @@ static bool files_init(struct ui_context *ctx, void *p)
 static void files_on_show(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    if (!priv->cache_data.font) {
-        const char *font_path = ui_platform_driver_vita.get_font_path(ctx);
-        ui_render_driver_vita.font_init(ctx, &priv->cache_data.font, font_path);
-    }
+    if (!priv->cache_data.font)
+        ui_render_driver_vita.font_init(ctx, &priv->cache_data.font);
     fill_path_items(priv, NULL, false);
 }
 

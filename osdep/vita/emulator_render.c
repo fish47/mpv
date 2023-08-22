@@ -932,8 +932,12 @@ static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
     return cache3;
 }
 
-static bool render_font_init(struct ui_context *ctx, struct ui_font **font, const char *path)
+static bool render_font_init(struct ui_context *ctx, struct ui_font **font)
 {
+    const char *path = emulator_get_font_path(ctx);
+    if (!path)
+        return false;
+
     struct priv_render *priv = ctx->priv_render;
     struct ui_font *result = ta_new_ptrtype(ctx, result);
     *result = (struct ui_font) {

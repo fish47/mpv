@@ -431,6 +431,7 @@ if(BUILD_VITA)
 
     list(APPEND mpv_link_libs
         vita2d
+        ScePgf_stub
         SceGxm_stub
         SceCtrl_stub
         SceAudio_stub

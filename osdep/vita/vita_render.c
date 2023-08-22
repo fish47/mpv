@@ -1,11 +1,99 @@
 #include "ui_driver.h"
+#include "ui_context.h"
 #include "common/common.h"
+#include "options/path.h"
 
 #include <vita2d.h>
 #include <libavutil/macros.h>
 #include <libavutil/imgutils.h>
 
-struct priv_render {};
+struct font_impl_data_pgf {
+    void *reserved;
+};
+
+struct font_impl_data_freetype {
+    const char *font_path;
+};
+
+union font_impl_data_pack {
+    struct font_impl_data_pgf pgf;
+    struct font_impl_data_freetype freetype;
+};
+
+struct font_impl {
+    void *(*init)(union font_impl_data_pack *data);
+    void (*uninit)(void *font);
+    void (*draw)(void *font, struct ui_font_draw_args *args);
+};
+
+struct priv_render {
+    const struct font_impl *font_impl;
+    union font_impl_data_pack font_impl_data;
+};
+
+static const struct font_impl font_impl_pgf;
+static const struct font_impl font_impl_freetype;
+
+static const struct font_impl *font_impl_list[] = {
+    &font_impl_freetype,
+    &font_impl_pgf,
+};
+
+static const char *freetype_font_paths[] = {
+    "ux0:font.ttf",
+};
+
+static struct priv_render *get_priv_render(struct ui_context *ctx)
+{
+    return (struct priv_render*) ctx->priv_render;
+}
+
+static void *font_impl_pgf_init(union font_impl_data_pack *data)
+{
+    return vita2d_load_default_pgf();
+}
+
+static void font_impl_pgf_uninit(void *font)
+{
+    vita2d_pgf *pgf = font;
+    vita2d_free_pgf(pgf);
+}
+
+static void font_impl_pgf_draw(void *font, struct ui_font_draw_args *args)
+{
+    vita2d_pgf *pgf = font;
+    float scale = MPMIN(args->size / 24.0, 1);
+    vita2d_pgf_draw_text(pgf, args->x, args->y, args->color, scale, args->text);
+}
+
+static void *font_impl_ft_init(union font_impl_data_pack *data)
+{
+    const char *path = data->freetype.font_path;
+    if (path && mp_path_exists(path))
+        return vita2d_load_font_file(path);
+
+    for (int i = 0; i < MP_ARRAY_SIZE(freetype_font_paths); ++i) {
+        path = freetype_font_paths[i];
+        if (mp_path_exists(path)) {
+            data->freetype.font_path = path;
+            return vita2d_load_font_file(path);
+        }
+    }
+
+    return NULL;
+}
+
+static void font_impl_ft_uninit(void *font)
+{
+    vita2d_font *ft = font;
+    vita2d_free_font(ft);
+}
+
+static void font_impl_ft_draw(void *font, struct ui_font_draw_args *args)
+{
+    vita2d_font *ft = font;
+    vita2d_font_draw_text(ft, args->x, args->y, args->color, args->size, args->text);
+}
 
 static bool render_init(struct ui_context *ctx)
 {
@@ -66,6 +154,39 @@ static void render_texture_uninit(struct ui_context *ctx, struct ui_texture **te
     if (impl)
         vita2d_free_texture(impl);
     *tex = NULL;
+}
+
+static bool render_font_init(struct ui_context *ctx, struct ui_font **font)
+{
+    void *impl = NULL;
+    struct priv_render *priv = get_priv_render(ctx);
+    if (priv->font_impl) {
+        impl = priv->font_impl->init(&priv->font_impl_data);
+        if (impl)
+            goto found;
+    }
+
+    for (int i = 0; i < MP_ARRAY_SIZE(font_impl_list); ++i) {
+        const struct font_impl *policy = font_impl_list[i];
+        impl = policy->init(&priv->font_impl_data);
+        if (impl) {
+            priv->font_impl = policy;
+            goto found;
+        }
+    }
+
+found:
+    if (!impl)
+        return false;
+
+    *font = impl;
+    return true;
+}
+
+static void render_font_uninit(struct ui_context *ctx, struct ui_font **font)
+{
+    get_priv_render(ctx)->font_impl->uninit(*font);
+    *font = NULL;
 }
 
 static void render_clip_start(struct ui_context *ctx, struct mp_rect *rect)
@@ -130,6 +251,12 @@ static void render_draw_texture(struct ui_context *ctx, struct ui_texture *tex,
                                    tex_w, tex_h, sx, sy);
 }
 
+static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
+                             struct ui_font_draw_args *args)
+{
+    get_priv_render(ctx)->font_impl->draw(font, args);
+}
+
 static vita2d_color_vertex* pool_alloc_color_vertex(int count)
 {
     size_t vert_size = sizeof(vita2d_color_vertex);
@@ -168,6 +295,18 @@ static void render_draw_rectangle(struct ui_context *ctx,
     vita2d_draw_array(SCE_GXM_PRIMITIVE_TRIANGLE_STRIP, base, count);
 }
 
+static const struct font_impl font_impl_pgf = {
+    .init = font_impl_pgf_init,
+    .uninit = font_impl_pgf_uninit,
+    .draw = font_impl_pgf_draw,
+};
+
+static const struct font_impl font_impl_freetype = {
+    .init = font_impl_ft_init,
+    .uninit = font_impl_ft_uninit,
+    .draw = font_impl_ft_draw,
+};
+
 const struct ui_render_driver ui_render_driver_vita = {
     .priv_size = sizeof(struct priv_render),
 
@@ -181,9 +320,13 @@ const struct ui_render_driver ui_render_driver_vita = {
     .texture_uninit = render_texture_uninit,
     .texture_upload = render_texture_upload,
 
+    .font_init = render_font_init,
+    .font_uninit = render_font_uninit,
+
     .clip_start = render_clip_start,
     .clip_end = render_clip_end,
 
+    .draw_font = render_draw_font,
     .draw_texture = render_draw_texture,
     .draw_rectangle = render_draw_rectangle,
 };

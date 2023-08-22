@@ -75,6 +75,11 @@ static uint32_t platform_poll_keys(struct ui_context *ctx)
     return keys;
 }
 
+const char* platform_get_files_dir(struct ui_context *ctx)
+{
+    return "ux0:";
+}
+
 const struct ui_platform_driver ui_platform_driver_vita = {
     .priv_size = sizeof(struct priv_platform),
     .init = platform_init,
@@ -82,4 +87,5 @@ const struct ui_platform_driver ui_platform_driver_vita = {
     .exit = platform_exit,
     .poll_events = NULL,
     .poll_keys = platform_poll_keys,
+    .get_files_dir = platform_get_files_dir,
 };
