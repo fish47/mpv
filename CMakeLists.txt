@@ -3,6 +3,10 @@ cmake_minimum_required(VERSION 3.0)
 option(MPV_BUILD_EMULATOR "Build project for desktop to ease debugging" FALSE)
 set(MPV_FFMPEG_LIBS_DIR "" CACHE STRING "Specfiy FFMPEG static library directory")
 
+set(mpv_vita_title_id "MPV000001")
+set(mpv_vita_name "mpv-vita")
+set(mpv_vita_version "01.00")
+
 # apply vitasdk toolchain setup
 if(NOT MPV_BUILD_EMULATOR)
     if(NOT DEFINED ENV{VITASDK})
@@ -386,6 +390,7 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/config.h "\
 #define HAVE_GPL                1
 #define HAVE_VITA               1
 #define HAVE_TA_LEAK_REPORT     ${_emulator_flag}
+#define MPV_VITA_TITLE_ID       \"${mpv_vita_title_id}\"
 ")
 
 
@@ -514,9 +519,10 @@ target_link_libraries(${PROJECT_NAME}
 
 if(BUILD_VITA)
     set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d ATTRIBUTE2=12")
-    vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME})
-    vita_create_vpk(${PROJECT_NAME}.vpk "MPV000001" ${PROJECT_NAME}.self
-        NAME "mpv-vita"
-        VERSION "01.00"
+    vita_create_self(eboot.bin ${PROJECT_NAME})
+    vita_create_vpk(${PROJECT_NAME}.vpk
+        "${mpv_vita_title_id}" eboot.bin
+        NAME "${mpv_vita_name}"
+        VERSION "${mpv_vita_version}"
     )
 endif()

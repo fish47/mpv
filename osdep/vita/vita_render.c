@@ -1,3 +1,4 @@
+#include "config.h"
 #include "ui_driver.h"
 #include "ui_context.h"
 #include "common/common.h"
@@ -40,7 +41,8 @@ static const struct font_impl *font_impl_list[] = {
 };
 
 static const char *freetype_font_paths[] = {
-    "ux0:font.ttf",
+    "ux0:app/"MPV_VITA_TITLE_ID"/font.ttf",
+    "ux0:app/"MPV_VITA_TITLE_ID"/font.ttc",
 };
 
 static struct priv_render *get_priv_render(struct ui_context *ctx)
