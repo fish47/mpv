@@ -133,17 +133,38 @@ static bool do_init_texture(struct ui_texture **tex,
     return true;
 }
 
+static bool do_init_yuv420p3(struct ui_texture **tex, int w, int h)
+{
+    // https://github.com/xerpi/libvita2d/issues/86
+    // vita2d doesn't handle 3-byte-per-pixel formats
+
+    // firstly, create a texture with the same amount of memory
+    int rounded_w = FFALIGN(w, 16);
+    int rounded_h = FFALIGN(h, 2);
+    int total_bytes = rounded_w * rounded_h * 3 / 2;
+    int extra_w = rounded_w;
+    int extra_h = total_bytes / extra_w;
+    if (!do_init_texture(tex, extra_w, extra_h, SCE_GXM_TEXTURE_FORMAT_S8_000R))
+        return false;
+
+    // secondly, correct its size and the format
+    vita2d_texture *impl = (vita2d_texture*) *tex;
+    void *data = vita2d_texture_get_datap(impl);
+    sceGxmTextureInitLinear(&impl->gxm_tex, data,
+                            SCE_GXM_TEXTURE_FORMAT_YUV420P3_CSC0,
+                            rounded_w, rounded_h, 0);
+    return true;
+}
+
 static bool render_texture_init(struct ui_context *ctx, struct ui_texture **tex,
                                 enum ui_texure_fmt fmt, int w, int h)
 {
     *tex = NULL;
     switch (fmt) {
     case TEX_FMT_RGBA:
-        return do_init_texture(tex, FFALIGN(w, 8), h,
-                               SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_RGBA);
+        return do_init_texture(tex, FFALIGN(w, 8), h, SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_RGBA);
     case TEX_FMT_YUV420:
-        return do_init_texture(tex, FFALIGN(w, 16), FFALIGN(h, 2),
-                               SCE_GXM_TEXTURE_FORMAT_YUV420P3_CSC0);
+        return do_init_yuv420p3(tex, w, h);
     case TEX_FMT_UNKNOWN:
         return false;
     }
