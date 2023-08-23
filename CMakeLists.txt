@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.0)
 
 option(MPV_BUILD_EMULATOR "Build project for desktop to ease debugging" FALSE)
 set(MPV_FFMPEG_LIBS_DIR "" CACHE STRING "Specfiy FFMPEG static library directory")
@@ -23,7 +23,6 @@ set(mpv_compile_defs)
 set(mpv_compile_flags)
 
 list(APPEND mpv_inc_dirs
-    osdep/vita/include
     ${CMAKE_CURRENT_SOURCE_DIR})
 
 list(APPEND mpv_compile_flags
@@ -376,6 +375,19 @@ list(APPEND mpv_src_files
     osdep/vita/ui_panel_files.c
 )
 
+set(_emulator_flag 0)
+if(MPV_BUILD_EMULATOR)
+    set(_emulator_flag 1)
+endif()
+
+# config file content
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/config.h "\
+#define CONFIGURATION           \"vita\"
+#define HAVE_GPL                1
+#define HAVE_VITA               1
+#define HAVE_TA_LEAK_REPORT     ${_emulator_flag}
+")
+
 
 # generate file
 _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/etc/input.conf.inc
@@ -389,6 +401,9 @@ _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/ebml_defs.inc
 _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/ebml_types.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TOOLS/matroska.py
     --generate-header)
+_generate_source(mpv_gen_files ${mpv_gen_dir}/config.h
+    cmake -E copy_if_different
+    ${CMAKE_CURRENT_BINARY_DIR}/config.h)
 
 
 # ffmpeg depedencies
