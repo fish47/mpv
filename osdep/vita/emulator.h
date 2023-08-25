@@ -4,5 +4,9 @@
 
 #include <GLFW/glfw3.h>
 
-GLFWwindow *emulator_get_window(struct ui_context* ctx);
-const char *emulator_get_font_path(struct ui_context* ctx);
+struct emulator_platform_data {
+    GLFWwindow *window;
+    const char *font_path;
+};
+
+struct emulator_platform_data *emulator_get_platform_data(struct ui_context* ctx);

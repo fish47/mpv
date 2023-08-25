@@ -1,8 +1,6 @@
 #pragma once
 
-#include <stdint.h>
-#include <stdbool.h>
-#include <common/common.h>
+#include "common/common.h"
 
 struct ui_font;
 struct ui_texture;

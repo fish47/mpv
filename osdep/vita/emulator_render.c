@@ -469,7 +469,7 @@ static void render_render_end(struct ui_context *ctx)
     struct priv_render *priv = ctx->priv_render;
     font_cache_free_all(&priv->font_cache_old);
 
-    glfwSwapBuffers(emulator_get_window(ctx));
+    glfwSwapBuffers(emulator_get_platform_data(ctx)->window);
 }
 
 static GLuint create_texture(GLsizei w, GLsizei h, GLenum fmt, GLenum type)
@@ -934,7 +934,7 @@ static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
 
 static bool render_font_init(struct ui_context *ctx, struct ui_font **font)
 {
-    const char *path = emulator_get_font_path(ctx);
+    const char *path = emulator_get_platform_data(ctx)->font_path;
     if (!path)
         return false;
 

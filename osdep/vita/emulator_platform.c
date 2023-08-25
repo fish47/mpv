@@ -4,8 +4,7 @@
 #include "emulator.h"
 #include "ta/ta.h"
 
-#include <stdint.h>
-#include <unistd.h>
+#include <getopt.h>
 #include <limits.h>
 #include <sys/stat.h>
 
@@ -41,11 +40,23 @@ static const key_map_item_ext platform_key_map_virtual_swap = {
     { GLFW_KEY_L, UI_KEY_CODE_VITA_VIRTUAL_CANCEL },
 };
 
+enum cmd_option_type {
+    CMD_OPTION_TYPE_BOOL,
+    CMD_OPTION_TYPE_FILE,
+    CMD_OPTION_TYPE_DIR,
+};
+
+struct cmd_option {
+    const char *name;
+    enum cmd_option_type type;
+    bool required;
+    void *dest;
+};
+
 struct priv_platform {
-    GLFWwindow *window;
-    char *files_dir;
-    char *font_path;
+    struct emulator_platform_data platform_data;
     const key_map_item_ext *key_map_ext;
+    const char *files_dir;
 };
 
 static struct priv_platform *get_priv_platform(struct ui_context *ctx)
@@ -79,12 +90,113 @@ static void on_window_close(GLFWwindow *window)
     ui_panel_common_pop_all(ctx);
 }
 
-static uint64_t get_path_stat_type(const char *path)
+static bool do_set_param_path(void *parent, char **dst, const char *src, mode_t type)
 {
+    char buf[PATH_MAX];
+    char *normalized = realpath(src, buf);
+    if (!normalized)
+        return false;
+
     struct stat path_stat;
-    if (stat(path, &path_stat) != 0)
-        return 0;
-    return path_stat.st_mode;
+    if (stat(normalized, &path_stat) != 0)
+        return false;
+
+    if ((path_stat.st_mode & S_IFMT) != type)
+        return false;
+
+    TA_FREEP(dst);
+    *dst = ta_strdup(parent, src);
+    return true;
+}
+
+static void print_usage(const struct cmd_option *options, int n)
+{
+    const char *line_fmt = "%-16s%-10s%s\n";
+    printf(line_fmt, "[Parameter]", "[Type]", "[Required]");
+
+    for (int i = 0; i < n; ++i) {
+        const struct cmd_option *cmd = &options[i];
+        const char *required = cmd->required ? "yes" : "no";
+        const char *type = "?";
+        switch (cmd->type) {
+        case CMD_OPTION_TYPE_BOOL:
+            type = "bool";
+            break;
+        case CMD_OPTION_TYPE_FILE:
+            type = "file";
+            break;
+        case CMD_OPTION_TYPE_DIR:
+            type = "dir";
+            break;
+        }
+
+        char cmd_name[50];
+        sprintf(cmd_name, "--%s", cmd->name);
+        printf(line_fmt, cmd_name, type, required);
+    }
+}
+
+static bool parse_options(struct priv_platform *priv, int argc, char *argv[])
+{
+    bool swap_ok = false;
+    const struct cmd_option cmd_options[] = {
+        { "swap-ok", CMD_OPTION_TYPE_BOOL, false, &swap_ok },
+        { "font-path", CMD_OPTION_TYPE_FILE, true, &priv->platform_data.font_path },
+        { "files-dir", CMD_OPTION_TYPE_DIR, true, &priv->files_dir },
+    };
+
+    int missed_opts = 0;
+    struct option opt_options[MP_ARRAY_SIZE(cmd_options) + 1] = {0};
+    for (int i = 0; i < MP_ARRAY_SIZE(cmd_options); ++i) {
+        struct option *opt = &opt_options[i];
+        const struct cmd_option *cmd = &cmd_options[i];
+        opt->name = cmd->name;
+        opt->has_arg = (cmd->type != CMD_OPTION_TYPE_BOOL);
+        if (cmd->required)
+            missed_opts |= (1 << i);
+    }
+
+    int opterr_bak = opterr;
+    opterr = 0;
+    while (true) {
+        int opt = -1;
+        if (getopt_long(argc, argv, "", opt_options, &opt) == -1)
+            break;
+
+        // ignore any unknown parameters
+        if (opt < 0)
+            continue;
+
+        bool valid = false;
+        const struct cmd_option *cmd = &cmd_options[opt];
+        switch (cmd->type) {
+        case CMD_OPTION_TYPE_BOOL:
+            valid = true;
+            *((bool*) cmd->dest) = true;
+            break;
+        case CMD_OPTION_TYPE_DIR:
+            valid = do_set_param_path(priv, cmd->dest, optarg, S_IFDIR);
+            break;
+        case CMD_OPTION_TYPE_FILE:
+            valid = do_set_param_path(priv, cmd->dest, optarg, S_IFREG);
+            break;
+        }
+        if (valid && cmd->required)
+            missed_opts &= ~(1 << opt);
+    }
+    opterr = opterr_bak;
+
+    if (missed_opts)
+        goto fail;
+
+    priv->key_map_ext = &platform_key_map_virtual_asia;
+    if (swap_ok)
+        priv->key_map_ext = &platform_key_map_virtual_swap;
+    return true;
+
+fail:
+    print_usage(cmd_options, MP_ARRAY_SIZE(cmd_options));
+    return false;
 }
 
 static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
@@ -92,31 +204,8 @@ static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
     struct priv_platform *priv = get_priv_platform(ctx);
     priv->key_map_ext = &platform_key_map_virtual_asia;
 
-    int opt = 0;
-    char buf[PATH_MAX] = {0};
-    char *normalized = NULL;
-    while ((opt = getopt(argc, argv, "sf:d:")) != -1) {
-        switch (opt) {
-        case 'f':
-            normalized = realpath(optarg, buf);
-            if (S_ISREG(get_path_stat_type(normalized)))
-                priv->font_path = ta_strdup(priv, normalized);
-            break;
-        case 'd':
-            normalized = realpath(optarg, buf);
-            if (S_ISDIR(get_path_stat_type(normalized)))
-                priv->files_dir = ta_strdup(priv, normalized);
-            break;
-        case 's':
-            priv->key_map_ext = &platform_key_map_virtual_swap;
-            break;
-        }
-    }
-
-    if (!(priv->font_path && priv->files_dir)) {
-        printf("Usage: [-s] -f FONT_PATH -d OPEN_DIR\n");
+    if (!parse_options(priv, argc, argv))
         return false;
-    }
 
     if (!glfwInit())
         return false;
@@ -143,15 +232,15 @@ static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
     glfwSetWindowCloseCallback(window, on_window_close);
     glfwSwapInterval(0);
 
-    priv->window = window;
+    priv->platform_data.window = window;
     return true;
 }
 
 static void platform_uninit(struct ui_context *ctx)
 {
     struct priv_platform *priv = get_priv_platform(ctx);
-    if (priv->window)
-        glfwDestroyWindow(priv->window);
+    if (priv->platform_data.window)
+        glfwDestroyWindow(priv->platform_data.window);
     glfwTerminate();
 }
 
@@ -174,9 +263,9 @@ static uint32_t platform_poll_keys(struct ui_context *ctx)
 {
     uint32_t bits = 0;
     struct priv_platform *priv = get_priv_platform(ctx);
-    do_poll_keys(priv->window, &bits,
+    do_poll_keys(priv->platform_data.window, &bits,
                  platform_key_map, MP_ARRAY_SIZE(platform_key_map));
-    do_poll_keys(priv->window, &bits,
+    do_poll_keys(priv->platform_data.window, &bits,
                  *priv->key_map_ext, MP_ARRAY_SIZE(*priv->key_map_ext));
     return bits;
 }
@@ -196,13 +285,9 @@ const struct ui_platform_driver ui_platform_driver_vita = {
     .get_files_dir = platform_get_files_dir,
 };
 
-GLFWwindow *emulator_get_window(struct ui_context *ctx)
+struct emulator_platform_data *emulator_get_platform_data(struct ui_context *ctx)
 {
-    return get_priv_platform(ctx)->window;
+    return &get_priv_platform(ctx)->platform_data;
 }
 
-const char *emulator_get_font_path(struct ui_context *ctx)
-{
-    return get_priv_platform(ctx)->font_path;
-}
 
