@@ -2,6 +2,8 @@
 
 #include "common/common.h"
 
+#include <libavcodec/codec.h>
+
 struct ui_font;
 struct ui_texture;
 struct ui_context;
@@ -20,6 +22,14 @@ struct ui_font_draw_args {
     unsigned int color;
 };
 
+struct ui_texture_data_args {
+    const uint8_t **data;
+    const int *strides;
+    int width;
+    int height;
+    int planes;
+};
+
 struct ui_texture_draw_args {
     struct mp_rect *src;
     struct mp_rect *dst;
@@ -35,7 +45,7 @@ struct ui_platform_driver {
     int priv_size;
     bool (*init)(struct ui_context *ctx, int argc, char *argv[]);
     void (*uninit)(struct ui_context *ctx);
-    void (*exit)();
+    void (*exit)(void);
     void (*poll_events)(struct ui_context *ctx);
     uint32_t (*poll_keys)(struct ui_context *ctx);
     const char* (*get_files_dir)(struct ui_context *ctx);
@@ -57,12 +67,21 @@ struct ui_render_driver {
     void (*render_start)(struct ui_context *ctx);
     void (*render_end)(struct ui_context *ctx);
 
+    int (*dr_align)(enum ui_texure_fmt fmt, int *w, int *h);
+    bool (*dr_prepare)(struct ui_context *ctx, const AVCodec *codec, AVDictionary **opts);
+    bool (*dr_vram_init)(struct ui_context *ctx, int size, void **vram);
+    void (*dr_vram_uninit)(struct ui_context *ctx, void **vram);
+    void (*dr_vram_lock)(struct ui_context *ctx, void *vram);
+    void (*dr_vram_unlock)(struct ui_context *ctx, void *vram);
+
     bool (*texture_init)(struct ui_context *ctx, struct ui_texture **tex,
-                         enum ui_texure_fmt fmt, int w, int h);
+                         enum ui_texure_fmt fmt, int w, int h, bool dr);
     void (*texture_uninit)(struct ui_context *ctx, struct ui_texture **tex);
-    void (*texture_upload)(struct ui_context *ctx,
-                           struct ui_texture *tex, int w, int h,
-                           const uint8_t **data, const int *strides, int planes);
+    void (*texture_upload)(struct ui_context *ctx, struct ui_texture *tex,
+                           struct ui_texture_data_args *args);
+    bool (*texture_attach)(struct ui_context *ctx, struct ui_texture *tex,
+                           struct ui_texture_data_args *args);
+    void (*texture_detach)(struct ui_context *ctx, struct ui_texture *tex);
 
     bool (*font_init)(struct ui_context *ctx, struct ui_font **font);
     void (*font_uninit)(struct ui_context *ctx, struct ui_font **font);

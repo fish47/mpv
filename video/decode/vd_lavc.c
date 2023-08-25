@@ -687,8 +687,14 @@ static void init_avctx(struct mp_filter *vd)
         goto error;
     }
 
+    AVDictionary *opts = NULL;
+#if HAVE_VITA
+    const void *pack[] = {lavc_codec, &opts};
+    vo_control(ctx->vo, VOCTRL_PREPARE_DR_DECODER, pack);
+#endif
+
     /* open it */
-    if (avcodec_open2(avctx, lavc_codec, NULL) < 0)
+    if (avcodec_open2(avctx, lavc_codec, &opts) < 0)
         goto error;
 
     // Sometimes, the first packet contains information required for correct
@@ -704,11 +710,13 @@ static void init_avctx(struct mp_filter *vd)
         avcodec_flush_buffers(ctx->avctx);
     }
 
+    av_dict_free(&opts);
     return;
 
 error:
     MP_ERR(vd, "Could not open codec.\n");
     uninit_avctx(vd);
+    av_dict_free(&opts);
 }
 
 static void reset_avctx(struct mp_filter *vd)
@@ -881,7 +889,9 @@ static int get_buffer2_direct(AVCodecContext *avctx, AVFrame *pic, int flags)
     int w = pic->width;
     int h = pic->height;
     int linesize_align[AV_NUM_DATA_POINTERS] = {0};
+#if !HAVE_VITA
     avcodec_align_dimensions2(avctx, &w, &h, linesize_align);
+#endif
 
     // We assume that different alignments are just different power-of-2s.
     // Thus, a higher alignment always satisfies a lower alignment.
@@ -1084,6 +1094,13 @@ static int decode_frame(struct mp_filter *vd)
         av_frame_unref(ctx->pic);
         return ret;
     }
+
+#if HAVE_VITA
+    pthread_mutex_lock(&ctx->dr_lock);
+    if (!ctx->dr_failed)
+        mpi->fields |= MP_IMGFIELD_DR_FRAME;
+    pthread_mutex_unlock(&ctx->dr_lock);
+#endif
 
     if (mpi->imgfmt == IMGFMT_CUDA && !mpi->planes[0]) {
         MP_ERR(vd, "CUDA frame without data. This is a FFmpeg bug.\n");

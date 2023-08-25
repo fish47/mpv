@@ -41,7 +41,7 @@ static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
 static void platform_uninit(struct ui_context *ctx)
 {}
 
-static void platform_exit()
+static void platform_exit(void)
 {
     sceKernelExitProcess(0);
 }

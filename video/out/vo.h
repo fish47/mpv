@@ -124,6 +124,8 @@ enum mp_voctrl {
 
     /* private to vo_gpu and vo_gpu_next */
     VOCTRL_EXTERNAL_RESIZE,
+
+    VOCTRL_PREPARE_DR_DECODER,          // {const AVCode*, AVDictionary**}
 };
 
 #define VO_TRUE         true

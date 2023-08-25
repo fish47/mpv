@@ -37,6 +37,7 @@
 #define MP_IMGFIELD_TOP_FIRST 0x02
 #define MP_IMGFIELD_REPEAT_FIRST 0x04
 #define MP_IMGFIELD_INTERLACED 0x20
+#define MP_IMGFIELD_DR_FRAME 0x10000
 
 // Describes image parameters that usually stay constant.
 // New fields can be added in the future. Code changing the parameters should

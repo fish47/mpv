@@ -71,18 +71,30 @@ struct gl_tex_plane_spec {
 };
 
 struct gl_tex_impl_spec {
+    enum AVPixelFormat ff_format;
+    int pixel_bits;
+    int align_w;
+    int align_h;
     int num_planes;
     const struct gl_tex_plane_spec *plane_specs;
     const char *shader_source_frag;
 };
 
 static const struct gl_tex_impl_spec tex_spec_unknown = {
+    .ff_format = AV_PIX_FMT_NONE,
+    .pixel_bits = 0,
+    .align_w = 0,
+    .align_h = 0,
     .num_planes = 0,
     .plane_specs = NULL,
     .shader_source_frag = NULL,
 };
 
 static const struct gl_tex_impl_spec tex_spec_a8 = {
+    .ff_format = AV_PIX_FMT_GRAY8,
+    .pixel_bits = 8,
+    .align_w = 1,
+    .align_h = 1,
     .num_planes = 1,
     .plane_specs = (const struct gl_tex_plane_spec[]) {
         { 1, 1, GL_ALPHA, GL_UNSIGNED_BYTE, "u_texture" },
@@ -98,6 +110,10 @@ static const struct gl_tex_impl_spec tex_spec_a8 = {
 };
 
 static const struct gl_tex_impl_spec tex_spec_rgba = {
+    .ff_format = AV_PIX_FMT_RGBA,
+    .pixel_bits = 32,
+    .align_w = 1,
+    .align_h = 1,
     .num_planes = 1,
     .plane_specs = (const struct gl_tex_plane_spec[]) {
         { 4, 1, GL_RGBA, GL_UNSIGNED_BYTE, "u_texture" },
@@ -113,6 +129,10 @@ static const struct gl_tex_impl_spec tex_spec_rgba = {
 };
 
 static const struct gl_tex_impl_spec tex_spec_yuv420 = {
+    .ff_format = AV_PIX_FMT_YUV420P,
+    .pixel_bits = 12,
+    .align_w = 2,
+    .align_h = 2,
     .num_planes = 3,
     .plane_specs = (const struct gl_tex_plane_spec[]) {
         { 1, 1, GL_ALPHA, GL_UNSIGNED_BYTE, "u_texture_y" },
@@ -162,6 +182,16 @@ struct gl_program_draw_triangle {
     GLint uniform_transform;
 };
 
+struct vram_header {
+    bool locked;
+};
+
+union vram_header_aligned {
+    struct vram_header header;
+    void *align_ptr;
+    char align_bytes[FFALIGN(sizeof(struct vram_header), 64)];
+};
+
 struct freetype_lib {
     FT_Library lib;
     FTC_Manager manager;
@@ -204,6 +234,8 @@ struct ui_texture {
     int w;
     int h;
     enum ui_texure_fmt fmt;
+    bool dr;
+    bool attached;
 };
 
 struct ui_font {
@@ -472,6 +504,71 @@ static void render_render_end(struct ui_context *ctx)
     glfwSwapBuffers(emulator_get_platform_data(ctx)->window);
 }
 
+static int render_dr_align(enum ui_texure_fmt fmt, int *w, int *h)
+{
+    // just make sure the buffer is big enough to hold padded pixel data
+    const struct gl_tex_impl_spec *spec = get_gl_tex_impl_spec(fmt);
+    *w = FFALIGN(*w + 1, 32);
+    *h = FFALIGN(*h + 1, 32);
+    return (*w) * (*h) * spec->pixel_bits / 8;
+}
+
+static bool render_dr_prepare(struct ui_context *ctx,
+                              const AVCodec *codec, AVDictionary **opts)
+{
+    return emulator_get_platform_data(ctx)->enable_dr;
+}
+
+static struct vram_header *get_vram_header(void *vram)
+{
+    union vram_header_aligned *p = vram;
+    return &(p - 1)->header;
+}
+
+static void do_toggle_vram_lock_state(void *vram, bool locked)
+{
+    struct vram_header *header = get_vram_header(vram);
+    assert(header->locked != locked);
+    header->locked = locked;
+}
+
+static void uninit_vram(void *vram)
+{
+    struct vram_header *header = vram;
+    assert(!header->locked);
+}
+
+static bool render_dr_vram_init(struct ui_context *ctx, int size, void **vram)
+{
+    size_t total_size = size + sizeof(union vram_header_aligned);
+    union vram_header_aligned *header = ta_alloc_size(ctx->priv_render, total_size);
+    if (!header)
+        return false;
+
+    ta_set_destructor(header, uninit_vram);
+    header->header.locked = false;
+    *vram = header + 1;
+    return true;
+}
+
+static void render_dr_vram_uninit(struct ui_context *ctx, void **vram)
+{
+    struct vram_header *header = get_vram_header(*vram);
+    assert(!header->locked);
+    ta_free(header);
+    *vram = NULL;
+}
+
+static void render_dr_vram_lock(struct ui_context *ctx, void *vram)
+{
+    do_toggle_vram_lock_state(vram, true);
+}
+
+static void render_dr_vram_unlock(struct ui_context *ctx, void *vram)
+{
+    do_toggle_vram_lock_state(vram, false);
+}
+
 static GLuint create_texture(GLsizei w, GLsizei h, GLenum fmt, GLenum type)
 {
     GLuint tex_id;
@@ -485,19 +582,31 @@ static GLuint create_texture(GLsizei w, GLsizei h, GLenum fmt, GLenum type)
     return tex_id;
 }
 
+static void uninit_texture(void *p)
+{
+    struct ui_texture *new_tex = p;
+    if (new_tex->dr)
+        assert(!new_tex->attached);
+}
+
 static bool render_texture_init(struct ui_context *ctx, struct ui_texture **tex,
-                                enum ui_texure_fmt fmt, int w, int h)
+                                enum ui_texure_fmt fmt, int w, int h, bool dr)
 {
     struct ui_texture *new_tex = ta_new_ptrtype(ctx, new_tex);
-    new_tex->w = w;
-    new_tex->h = h;
-    new_tex->fmt = fmt;
-
     const struct gl_tex_impl_spec *spec = get_gl_tex_impl_spec(fmt);
+    int rounded_w = FFALIGN(w, spec->align_w);
+    int rounded_h = FFALIGN(h, spec->align_h);
+    ta_set_destructor(new_tex, uninit_texture);
+    new_tex->w = rounded_w;
+    new_tex->h = rounded_h;
+    new_tex->fmt = fmt;
+    new_tex->dr = dr;
+    new_tex->attached = false;
+
     for (int i = 0; i < spec->num_planes; ++i) {
         const struct gl_tex_plane_spec *plane = spec->plane_specs + i;
-        int tex_w = w / plane->div;
-        int tex_h = h / plane->div;
+        int tex_w = rounded_w / plane->div;
+        int tex_h = rounded_h / plane->div;
         new_tex->ids[i] = create_texture(tex_w, tex_h, plane->fmt, plane->type);
     }
 
@@ -575,23 +684,43 @@ static void upload_texture_buffered(GLuint id, const void *data,
     }
 }
 
-static void render_texture_upload(struct ui_context *ctx,
-                                  struct ui_texture *tex, int w, int h,
-                                  const uint8_t **data, const int *strides, int planes)
+static void do_upload_tex_data(struct ui_context *ctx, struct ui_texture *tex,
+                               struct ui_texture_data_args *args)
 {
     const struct gl_tex_impl_spec *spec = get_gl_tex_impl_spec(tex->fmt);
-    if (spec->num_planes != planes)
+    if (spec->num_planes != args->planes)
         return;
 
     struct priv_render *priv_render = ctx->priv_render;
-    for (int i = 0; i < planes; ++i) {
+    for (int i = 0; i < args->planes; ++i) {
         const struct gl_tex_plane_spec *plane = spec->plane_specs + i;
-        int data_w = MPMIN(tex->w, w) / plane->div;
-        int data_h = MPMIN(tex->h, h) / plane->div;
-        upload_texture_buffered(tex->ids[i], data[i], 0, 0, data_w, data_h,
-                                strides[i], plane->bpp, plane->fmt, plane->type,
+        int data_w = MPMIN(tex->w, args->width) / plane->div;
+        int data_h = MPMIN(tex->h, args->height) / plane->div;
+        upload_texture_buffered(tex->ids[i], args->data[i], 0, 0, data_w, data_h,
+                                args->strides[i], plane->bpp, plane->fmt, plane->type,
                                 priv_render->buffer, PRIV_BUFFER_SIZE);
     }
+}
+
+static bool render_texture_attach(struct ui_context *ctx, struct ui_texture *tex,
+                                  struct ui_texture_data_args *args)
+{
+    assert(tex->dr);
+    tex->attached = true;
+    do_upload_tex_data(ctx, tex, args);
+    return true;
+}
+
+static void render_texture_detach(struct ui_context *ctx, struct ui_texture *tex)
+{
+    assert(tex->dr);
+    tex->attached = false;
+}
+
+static void render_texture_upload(struct ui_context *ctx, struct ui_texture *tex,
+                                  struct ui_texture_data_args *args)
+{
+    do_upload_tex_data(ctx, tex, args);
 }
 
 static void *normalize_to_vec4_color(float *base, unsigned int color)
@@ -1032,9 +1161,18 @@ const struct ui_render_driver ui_render_driver_vita = {
     .render_start = render_render_start,
     .render_end = render_render_end,
 
+    .dr_align = render_dr_align,
+    .dr_prepare = render_dr_prepare,
+    .dr_vram_init = render_dr_vram_init,
+    .dr_vram_uninit = render_dr_vram_uninit,
+    .dr_vram_lock = render_dr_vram_lock,
+    .dr_vram_unlock = render_dr_vram_unlock,
+
     .texture_init = render_texture_init,
     .texture_uninit = render_texture_uninit,
     .texture_upload = render_texture_upload,
+    .texture_attach = render_texture_attach,
+    .texture_detach = render_texture_detach,
 
     .font_init = render_font_init,
     .font_uninit = render_font_uninit,

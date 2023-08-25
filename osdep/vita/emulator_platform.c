@@ -141,6 +141,7 @@ static bool parse_options(struct priv_platform *priv, int argc, char *argv[])
     bool swap_ok = false;
     const struct cmd_option cmd_options[] = {
         { "swap-ok", CMD_OPTION_TYPE_BOOL, false, &swap_ok },
+        { "enable-dr", CMD_OPTION_TYPE_BOOL, false, &priv->platform_data.enable_dr },
         { "font-path", CMD_OPTION_TYPE_FILE, true, &priv->platform_data.font_path },
         { "files-dir", CMD_OPTION_TYPE_DIR, true, &priv->files_dir },
     };
