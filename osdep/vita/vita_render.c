@@ -258,28 +258,36 @@ static void render_render_end(struct ui_context *ctx)
     vita2d_swap_buffers();
 }
 
+static void do_set_texture_filters(vita2d_texture *tex)
+{
+    vita2d_texture_set_filters(tex, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
+}
+
 static bool do_init_texture(vita2d_texture **p_tex,
                             const struct texture_fmt_spec *spec,
                             SceGxmTextureFormat fmt, int w, int h, bool dr)
 {
-    void *impl = NULL;
+    vita2d_texture *impl = NULL;
     if (dr) {
         struct dr_texture *tex = malloc(sizeof(struct dr_texture));
-        if (tex) {
-            memset(&tex->tex, 0, sizeof(vita2d_texture));
-            tex->w = w;
-            tex->h = h;
-            tex->spec = spec;
-            tex->tex.data_UID = VRAM_MEM_BLOCK_NONE_ID;
-            do_dr_align_size(spec->tex_fmt, &tex->w, &tex->h);
-            impl = tex;
-        }
+        if (!tex)
+            return false;
+
+        memset(&tex->tex, 0, sizeof(vita2d_texture));
+        tex->w = w;
+        tex->h = h;
+        tex->spec = spec;
+        tex->tex.data_UID = VRAM_MEM_BLOCK_NONE_ID;
+        do_dr_align_size(spec->tex_fmt, &tex->w, &tex->h);
+        impl = &tex->tex;
     } else {
         SceGxmTextureFormat resolve_fmt = spec ? spec->sce_fmt : fmt;
         impl = vita2d_create_empty_texture_format(w, h, resolve_fmt);
+        if (!impl)
+            return false;
+
+        do_set_texture_filters(impl);
     }
-    if (!impl)
-        return false;
     *p_tex = impl;
     return true;
 }
@@ -301,6 +309,7 @@ static bool do_init_yuv420p3(vita2d_texture **p_tex, int rounded_w, int rounded_
     sceGxmTextureInitLinear(&(*p_tex)->gxm_tex, data,
                             SCE_GXM_TEXTURE_FORMAT_YUV420P3_CSC0,
                             rounded_w, rounded_h, 0);
+    do_set_texture_filters(*p_tex);
     return true;
 }
 
@@ -419,6 +428,8 @@ static bool render_texture_attach(struct ui_context *ctx, struct ui_texture *tex
                                       impl->spec->sce_fmt, impl->w, impl->h, 0);
     if (ret != SCE_OK)
         return false;
+
+    do_set_texture_filters(&impl->tex);
     return true;
 }
 
