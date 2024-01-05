@@ -1,7 +1,5 @@
 #include "vo.h"
 #include "sub/osd.h"
-#include "input/input.h"
-#include "input/keycodes.h"
 #include "osdep/vita/ui_context.h"
 #include "osdep/vita/ui_driver.h"
 #include "osdep/vita/ui_panel.h"
@@ -11,24 +9,12 @@
 
 #include <libavutil/imgutils.h>
 
-enum key_act {
-    KEY_ACT_DROP,
-    KEY_ACT_INPUT,
-    KEY_ACT_SEND_QUIT,
-    KEY_ACT_SEND_TOGGLE,
-};
-
 enum render_act {
     RENDER_ACT_INIT,
     RENDER_ACT_REDRAW,
     RENDER_ACT_TEX_INIT,
     RENDER_ACT_TEX_UPDATE,
     RENDER_ACT_MAX,
-};
-
-struct init_vo_data {
-    struct ui_context *ctx;
-    struct input_ctx *input;
 };
 
 struct init_tex_data {
@@ -42,8 +28,8 @@ struct update_tex_data {
     struct mp_image *image;
 };
 
-struct priv_panel {
-    struct input_ctx *input_ctx;
+struct priv_draw {
+    struct ui_context *ctx;
 
     struct ui_texture *video_tex;
     struct mp_rect video_src_rect;
@@ -64,12 +50,12 @@ static mp_dispatch_fn get_render_act_fn(enum render_act act);
 static struct ui_context *get_ui_context(struct vo *vo)
 {
     // this pointer is passed as option value before MPV initialization
-    // it should be valid in vo_driver's whole lifetime
+    // it should be constant and valid during vo_driver's lifetime
     uintptr_t addr = (uintptr_t) vo->opts->WinID;
     return (struct ui_context*) addr;
 }
 
-static void free_locked_dr_image(struct ui_context *ctx, struct priv_panel *priv)
+static void free_locked_dr_image(struct ui_context *ctx, struct priv_draw *priv)
 {
     if (!priv->dr_image_locked)
         return;
@@ -80,8 +66,9 @@ static void free_locked_dr_image(struct ui_context *ctx, struct priv_panel *priv
     TA_FREEP(&priv->dr_image_locked);
 }
 
-static void free_texture_and_images(struct ui_context *ctx, struct priv_panel *priv)
+static void free_texture_and_images(struct priv_draw *priv)
 {
+    struct ui_context *ctx = priv->ctx;
     TA_FREEP(&priv->dr_image_new);
     free_locked_dr_image(ctx, priv);
 
@@ -154,7 +141,7 @@ static struct ui_texture_data_args get_texture_data_args(struct mp_image *img)
     };
 }
 
-static void swap_locked_dr_image(struct ui_context *ctx, struct priv_panel *priv)
+static void swap_locked_dr_image(struct ui_context *ctx, struct priv_draw *priv)
 {
     if (!priv->dr_image_new)
         return;
@@ -169,10 +156,11 @@ static void swap_locked_dr_image(struct ui_context *ctx, struct priv_panel *priv
         free_locked_dr_image(ctx, priv);
 }
 
-static void do_panel_draw(struct ui_context *ctx)
+static void do_panel_draw(void *p)
 {
-    struct priv_panel *priv = ui_panel_player_get_vo_data(ctx);
-    if (!priv || !priv->video_tex)
+    struct priv_draw *priv = p;
+    struct ui_context *ctx = priv->ctx;
+    if (!priv->video_tex)
         return;
 
     swap_locked_dr_image(ctx, priv);
@@ -186,127 +174,27 @@ static void do_panel_draw(struct ui_context *ctx)
     ui_render_driver_vita.draw_texture(ctx, priv->video_tex, &args);
 }
 
-static void do_panel_uninit(struct ui_context *ctx)
+static void do_uninit_priv_draw(void *p)
 {
-    struct priv_panel *priv = ui_panel_player_get_vo_data(ctx);
-    if (priv)
-        free_texture_and_images(ctx, priv);
-}
-
-static int resolve_mp_key_code(enum ui_key_code key, enum key_act *out_act)
-{
-    switch (key) {
-    case UI_KEY_CODE_VITA_DPAD_LEFT:
-        return MP_KEY_GAMEPAD_DPAD_LEFT;
-    case UI_KEY_CODE_VITA_DPAD_RIGHT:
-        return MP_KEY_GAMEPAD_DPAD_RIGHT;
-    case UI_KEY_CODE_VITA_DPAD_UP:
-        return MP_KEY_GAMEPAD_DPAD_UP;
-    case UI_KEY_CODE_VITA_DPAD_DOWN:
-        return MP_KEY_GAMEPAD_DPAD_DOWN;
-    case UI_KEY_CODE_VITA_ACTION_SQUARE:
-        return MP_KEY_GAMEPAD_ACTION_LEFT;
-    case UI_KEY_CODE_VITA_ACTION_TRIANGLE:
-        return MP_KEY_GAMEPAD_ACTION_UP;
-    case UI_KEY_CODE_VITA_TRIGGER_L:
-        return MP_KEY_GAMEPAD_LEFT_SHOULDER;
-    case UI_KEY_CODE_VITA_TRIGGER_R:
-        return MP_KEY_GAMEPAD_RIGHT_SHOULDER;
-    case UI_KEY_CODE_VITA_START:
-        return MP_KEY_GAMEPAD_START;
-    case UI_KEY_CODE_VITA_SELECT:
-        return MP_KEY_GAMEPAD_MENU;
-
-    // ignore any associated key bindings
-    case UI_KEY_CODE_VITA_ACTION_CIRCLE:
-    case UI_KEY_CODE_VITA_ACTION_CROSS:
-        break;
-
-    case UI_KEY_CODE_VITA_VIRTUAL_OK:
-        *out_act = KEY_ACT_SEND_TOGGLE;
-        return 0;
-    case UI_KEY_CODE_VITA_VIRTUAL_CANCEL:
-        *out_act = KEY_ACT_SEND_QUIT;
-        return 0;
-
-    case UI_KEY_CODE_VITA_END:
-        break;
-    }
-
-    *out_act = KEY_ACT_DROP;
-    return 0;
-}
-
-static int resolve_mp_input_key(uint32_t code, enum ui_key_state state)
-{
-    switch (state) {
-    case UI_KEY_STATE_DOWN:
-        return code | MP_KEY_STATE_DOWN;
-    case UI_KEY_STATE_UP:
-        return code | MP_KEY_STATE_UP;
-    }
-
-    // it is unlikely to reach here
-    return MP_KEY_UNMAPPED;
-}
-
-static void do_panel_send_key(struct ui_context *ctx, struct ui_key *key)
-{
-    // this callback is called in the main thread
-
-    struct priv_panel *priv = ui_panel_player_get_vo_data(ctx);
-    if (!priv)
-        return;
-
-    enum key_act act = KEY_ACT_INPUT;
-    int code = resolve_mp_key_code(key->code, &act);
-    switch (act) {
-    case KEY_ACT_DROP:
-        break;
-    case KEY_ACT_INPUT:
-        // input_ctx is thread-safed, so it is fine to use it duraing its lifetime.
-        // if mpv or vo is destroying, main thread will be blocked until finish,
-        // this function will not be called hereafter.
-        mp_input_put_key(priv->input_ctx, resolve_mp_input_key(code, key->state));
-        break;
-    case KEY_ACT_SEND_QUIT:
-        if (key->state == UI_KEY_STATE_DOWN)
-            ui_panel_player_send_quit(ctx);
-        break;
-    case KEY_ACT_SEND_TOGGLE:
-        if (key->state == UI_KEY_STATE_DOWN)
-            ui_panel_player_send_toggle(ctx);
-        break;
-    }
+    // will be called in main thread in deconstructor
+    struct priv_draw *priv = p;
+    free_texture_and_images(priv);
 }
 
 static void do_render_init_vo_driver(void *p)
 {
-    struct init_vo_data *data = p;
-    struct ui_context *ctx = data->ctx;
-    struct priv_panel *priv = talloc_zero_size(ctx, sizeof(*priv));
-    priv->input_ctx = data->input;
-    ui_panel_player_set_vo_data(ctx, priv);
-
-    struct ui_panel_player_vo_fns fns = {
-        .draw = do_panel_draw,
-        .uninit = do_panel_uninit,
-        .send_key = do_panel_send_key,
-    };
-    ui_panel_player_set_vo_fns(ctx, &fns);
+    struct ui_context *ctx = p;
+    struct priv_draw *priv = talloc_zero_size(ctx, sizeof(*priv));
+    ta_set_destructor(priv, do_uninit_priv_draw);
+    ui_panel_player_set_vo_draw_data(ctx, priv);
+    ui_panel_player_set_vo_draw_fn(ctx, do_panel_draw);
 }
 
 static int preinit(struct vo *vo)
 {
     struct priv_vo *priv = vo->priv;
     memset(priv->cb_data_slots, 0, sizeof(priv->cb_data_slots));
-
-    struct init_vo_data *data = ta_new_ptrtype(priv, data);
-    *data = (struct init_vo_data) {
-        .ctx = get_ui_context(vo),
-        .input = vo->input_ctx,
-    };
-    render_act_post_steal(vo, RENDER_ACT_INIT, data);
+    render_act_post_ref(vo, RENDER_ACT_INIT, get_ui_context(vo));
     return 0;
 }
 
@@ -329,13 +217,14 @@ static void flip_page(struct vo *vo)
 static void do_render_init_texture(void *p)
 {
     struct init_tex_data *data = p;
-    struct priv_panel *priv = ui_panel_player_get_vo_data(data->ctx);
+    struct priv_draw *priv = ui_panel_player_get_vo_draw_data(data->ctx);
     if(!priv)
         return;
 
+    priv->ctx = data->ctx;
     priv->video_src_rect = data->src;
     priv->video_dst_rect = data->dst;
-    free_texture_and_images(data->ctx, priv);
+    free_texture_and_images(priv);
 }
 
 static int reconfig(struct vo *vo, struct mp_image_params *params)
@@ -365,7 +254,7 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
 static void do_render_update_texture(void *p)
 {
     struct update_tex_data *data = p;
-    struct priv_panel *priv = ui_panel_player_get_vo_data(data->ctx);
+    struct priv_draw *priv = ui_panel_player_get_vo_draw_data(data->ctx);
     if (!priv)
         return;
 
@@ -374,7 +263,7 @@ static void do_render_update_texture(void *p)
     bool is_dr_img = ((img->fields & MP_IMGFIELD_DR_FRAME) != 0);
     if (priv->dr_enabled != is_dr_img) {
         priv->dr_enabled = is_dr_img;
-        free_texture_and_images(data->ctx, priv);
+        free_texture_and_images(priv);
     }
 
     // create the corresponding texture if missing

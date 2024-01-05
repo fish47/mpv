@@ -1,47 +1,44 @@
 #include "ui_context.h"
 #include "ui_panel.h"
 #include "ta/ta.h"
-#include "libmpv/client.h"
+#include "player/core.h"
+#include "input/input.h"
+#include "input/keycodes.h"
 
-struct priv_panel {
-    mpv_handle *mpv;
-    void *vo_data;
-    struct ui_panel_player_vo_fns vo_fns;
+enum key_act {
+    KEY_ACT_DROP,
+    KEY_ACT_INPUT,
+    KEY_ACT_SEND_QUIT,
+    KEY_ACT_SEND_TOGGLE,
 };
 
-void *ui_panel_player_get_vo_data(struct ui_context *ctx)
+struct priv_panel {
+    mpv_handle *mpv_handle;
+    struct MPContext *mpv_ctx;
+    void *vo_data;
+    void (*vo_draw_fn)(void *data);
+};
+
+mpv_handle *mpv_create_vita(struct MPContext **p_mpctx);
+
+void *ui_panel_player_get_vo_draw_data(struct ui_context *ctx)
 {
     struct priv_panel *priv = ui_panel_common_get_priv(ctx, &ui_panel_player);
     return priv ? priv->vo_data : NULL;
 }
 
-void ui_panel_player_set_vo_data(struct ui_context *ctx, void *data)
+void ui_panel_player_set_vo_draw_data(struct ui_context *ctx, void *data)
 {
     struct priv_panel *priv = ui_panel_common_get_priv(ctx, &ui_panel_player);
     if (priv)
         priv->vo_data = ta_steal(priv, data);
 }
 
-void ui_panel_player_set_vo_fns(struct ui_context *ctx,
-                                const struct ui_panel_player_vo_fns *fns)
+void ui_panel_player_set_vo_draw_fn(struct ui_context *ctx, void (*fn)(void *data))
 {
     struct priv_panel *priv = ui_panel_common_get_priv(ctx, &ui_panel_player);
     if (priv)
-        priv->vo_fns = *fns;
-}
-
-void ui_panel_player_send_quit(struct ui_context *ctx)
-{
-    const char *args[] = { "quit", NULL };
-    struct priv_panel *priv = ctx->priv_panel;
-    mpv_command(priv->mpv, args);
-}
-
-void ui_panel_player_send_toggle(struct ui_context *ctx)
-{
-    const char *args[] = { "cycle", "pause", NULL };
-    struct priv_panel *priv = ctx->priv_panel;
-    mpv_command(priv->mpv, args);
+        priv->vo_draw_fn = fn;
 }
 
 static void on_mpv_wakeup(void *p)
@@ -52,21 +49,21 @@ static void on_mpv_wakeup(void *p)
 static bool player_init(struct ui_context *ctx, void *p)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    priv->mpv = mpv_create();
-    if (!priv->mpv)
+    priv->mpv_handle = mpv_create_vita(&priv->mpv_ctx);
+    if (!priv->mpv_handle)
         return false;
 
-    mpv_set_option(priv->mpv, "wid", MPV_FORMAT_INT64, &ctx);
-    mpv_set_option_string(priv->mpv, "idle", "yes");
-    mpv_set_option_string(priv->mpv, "keep-open", "yes");
-    mpv_set_wakeup_callback(priv->mpv, on_mpv_wakeup, ctx);
-    if (mpv_initialize(priv->mpv) != 0)
+    mpv_set_option(priv->mpv_handle, "wid", MPV_FORMAT_INT64, &ctx);
+    mpv_set_option_string(priv->mpv_handle, "idle", "yes");
+    mpv_set_option_string(priv->mpv_handle, "keep-open", "yes");
+    mpv_set_wakeup_callback(priv->mpv_handle, on_mpv_wakeup, ctx);
+    if (mpv_initialize(priv->mpv_handle) != 0)
         return false;
 
     struct ui_panel_player_init_params *params = p;
     if (params) {
         const char *args[] = { "loadfile", params->path, NULL };
-        mpv_command(priv->mpv, args);
+        mpv_command(priv->mpv_handle, args);
     }
     return true;
 }
@@ -74,43 +71,116 @@ static bool player_init(struct ui_context *ctx, void *p)
 static void player_uninit(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    if (priv->vo_fns.uninit)
-        priv->vo_fns.uninit(ctx);
-    if (priv->mpv)
-        mpv_destroy(priv->mpv);
+    if (priv->mpv_handle)
+        mpv_destroy(priv->mpv_handle);
 }
 
 static void player_on_draw(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    if (priv->vo_fns.draw)
-        priv->vo_fns.draw(ctx);
+    if (priv->vo_draw_fn && priv->vo_data)
+        priv->vo_draw_fn(priv->vo_data);
 }
 
 static void player_on_poll(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    if (!priv->mpv)
+    if (!priv->mpv_handle)
         return;
 
     while (true) {
-        mpv_event *event = mpv_wait_event(priv->mpv, 0);
+        mpv_event *event = mpv_wait_event(priv->mpv_handle, 0);
         if (event->event_id == MPV_EVENT_NONE) {
             break;
         } else if (event->event_id == MPV_EVENT_SHUTDOWN) {
-            mpv_terminate_destroy(priv->mpv);
-            priv->mpv = NULL;
+            mpv_terminate_destroy(priv->mpv_handle);
+            priv->mpv_handle = NULL;
             ui_panel_common_pop(ctx);
             break;
         }
     }
 }
 
+static int resolve_mp_key_code(enum ui_key_code key, enum key_act *out_act)
+{
+    switch (key) {
+    case UI_KEY_CODE_VITA_DPAD_LEFT:
+        return MP_KEY_GAMEPAD_DPAD_LEFT;
+    case UI_KEY_CODE_VITA_DPAD_RIGHT:
+        return MP_KEY_GAMEPAD_DPAD_RIGHT;
+    case UI_KEY_CODE_VITA_DPAD_UP:
+        return MP_KEY_GAMEPAD_DPAD_UP;
+    case UI_KEY_CODE_VITA_DPAD_DOWN:
+        return MP_KEY_GAMEPAD_DPAD_DOWN;
+    case UI_KEY_CODE_VITA_ACTION_SQUARE:
+        return MP_KEY_GAMEPAD_ACTION_LEFT;
+    case UI_KEY_CODE_VITA_ACTION_TRIANGLE:
+        return MP_KEY_GAMEPAD_ACTION_UP;
+    case UI_KEY_CODE_VITA_TRIGGER_L:
+        return MP_KEY_GAMEPAD_LEFT_SHOULDER;
+    case UI_KEY_CODE_VITA_TRIGGER_R:
+        return MP_KEY_GAMEPAD_RIGHT_SHOULDER;
+    case UI_KEY_CODE_VITA_START:
+        return MP_KEY_GAMEPAD_START;
+    case UI_KEY_CODE_VITA_SELECT:
+        return MP_KEY_GAMEPAD_MENU;
+
+    case UI_KEY_CODE_VITA_ACTION_CIRCLE:
+    case UI_KEY_CODE_VITA_ACTION_CROSS:
+        // ignore associated key bindings
+        break;
+
+    case UI_KEY_CODE_VITA_VIRTUAL_OK:
+        *out_act = KEY_ACT_SEND_TOGGLE;
+        return 0;
+    case UI_KEY_CODE_VITA_VIRTUAL_CANCEL:
+        *out_act = KEY_ACT_SEND_QUIT;
+        return 0;
+
+    case UI_KEY_CODE_VITA_END:
+        break;
+    }
+
+    *out_act = KEY_ACT_DROP;
+    return 0;
+}
+
+static int resolve_mp_input_key(uint32_t code, enum ui_key_state state)
+{
+    switch (state) {
+    case UI_KEY_STATE_DOWN:
+        return code | MP_KEY_STATE_DOWN;
+    case UI_KEY_STATE_UP:
+        return code | MP_KEY_STATE_UP;
+    }
+
+    // it is unlikely to reach here
+    return MP_KEY_UNMAPPED;
+}
+
 static void player_on_key(struct ui_context *ctx, struct ui_key *key)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    if (priv->vo_fns.send_key)
-        priv->vo_fns.send_key(ctx, key);
+    if (!priv->mpv_handle)
+        return;
+
+    enum key_act act = KEY_ACT_INPUT;
+    int code = resolve_mp_key_code(key->code, &act);
+    switch (act) {
+    case KEY_ACT_DROP:
+        break;
+    case KEY_ACT_INPUT:
+        mp_input_put_key(priv->mpv_ctx->input, resolve_mp_input_key(code, key->state));
+        break;
+    case KEY_ACT_SEND_QUIT:
+        if (key->state == UI_KEY_STATE_DOWN)
+            mpv_command(priv->mpv_handle, (const char*[]) { "quit", NULL });
+        break;
+    case KEY_ACT_SEND_TOGGLE:
+        if (key->state == UI_KEY_STATE_DOWN)
+            mpv_command(priv->mpv_handle, (const char*[]) { "cycle", "pause", NULL });
+        break;
+    }
 }
 
 const struct ui_panel ui_panel_player = {

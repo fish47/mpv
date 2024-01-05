@@ -45,6 +45,7 @@
 #include "osdep/io.h"
 #include "stream/stream.h"
 
+#include "config.h"
 #include "command.h"
 #include "core.h"
 #include "client.h"
@@ -642,6 +643,16 @@ mpv_handle *mpv_create(void)
 
     return ctx;
 }
+
+#if HAVE_VITA
+mpv_handle *mpv_create_vita(struct MPContext **p_mpctx)
+{
+    mpv_handle *handle = mpv_create();
+    if (handle && p_mpctx)
+        *p_mpctx = handle->mpctx;
+    return handle;
+}
+#endif
 
 mpv_handle *mpv_create_client(mpv_handle *ctx, const char *name)
 {
