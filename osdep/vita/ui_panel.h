@@ -27,6 +27,8 @@ struct ui_panel_player_init_params {
     char *path;
 };
 
+typedef void (*ui_panel_player_vo_draw_fn)(struct ui_context *ctx, void *data);
+
 void ui_panel_common_wakeup(struct ui_context *ctx);
 void ui_panel_common_invalidate(struct ui_context *ctx);
 void *ui_panel_common_get_priv(struct ui_context *ctx, const struct ui_panel *panel);
@@ -37,7 +39,7 @@ int64_t ui_panel_common_get_frame_time(struct ui_context *ctx);
 
 void *ui_panel_player_get_vo_draw_data(struct ui_context *ctx);
 void ui_panel_player_set_vo_draw_data(struct ui_context *ctx, void *data);
-void ui_panel_player_set_vo_draw_fn(struct ui_context *ctx, void (*fn)(void *data));
+void ui_panel_player_set_vo_draw_fn(struct ui_context *ctx, ui_panel_player_vo_draw_fn fn);
 
 extern const struct ui_panel ui_panel_player;
 extern const struct ui_panel ui_panel_files;

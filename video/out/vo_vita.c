@@ -29,8 +29,6 @@ struct update_tex_data {
 };
 
 struct priv_draw {
-    struct ui_context *ctx;
-
     struct ui_texture *video_tex;
     struct mp_rect video_src_rect;
     struct mp_rect video_dst_rect;
@@ -66,9 +64,8 @@ static void free_locked_dr_image(struct ui_context *ctx, struct priv_draw *priv)
     TA_FREEP(&priv->dr_image_locked);
 }
 
-static void free_texture_and_images(struct priv_draw *priv)
+static void free_texture_and_images(struct ui_context *ctx, struct priv_draw *priv)
 {
-    struct ui_context *ctx = priv->ctx;
     TA_FREEP(&priv->dr_image_new);
     free_locked_dr_image(ctx, priv);
 
@@ -156,10 +153,9 @@ static void swap_locked_dr_image(struct ui_context *ctx, struct priv_draw *priv)
         free_locked_dr_image(ctx, priv);
 }
 
-static void do_panel_draw(void *p)
+static void do_panel_draw(struct ui_context *ctx, void *p)
 {
     struct priv_draw *priv = p;
-    struct ui_context *ctx = priv->ctx;
     if (!priv->video_tex)
         return;
 
@@ -174,18 +170,10 @@ static void do_panel_draw(void *p)
     ui_render_driver_vita.draw_texture(ctx, priv->video_tex, &args);
 }
 
-static void do_uninit_priv_draw(void *p)
-{
-    // will be called in main thread in deconstructor
-    struct priv_draw *priv = p;
-    free_texture_and_images(priv);
-}
-
 static void do_render_init_vo_driver(void *p)
 {
     struct ui_context *ctx = p;
     struct priv_draw *priv = talloc_zero_size(ctx, sizeof(*priv));
-    ta_set_destructor(priv, do_uninit_priv_draw);
     ui_panel_player_set_vo_draw_data(ctx, priv);
     ui_panel_player_set_vo_draw_fn(ctx, do_panel_draw);
 }
@@ -198,10 +186,21 @@ static int preinit(struct vo *vo)
     return 0;
 }
 
+static void do_uninit_priv_draw(void *p)
+{
+    struct ui_context *ctx = p;
+    struct priv_draw *priv = ui_panel_player_get_vo_draw_data(ctx);
+    if (priv)
+        free_texture_and_images(ctx, priv);
+}
+
 static void uninit(struct vo *vo)
 {
     for (int i = 0; i < RENDER_ACT_MAX; ++i)
         render_act_remove(vo, i);
+
+    struct ui_context *ctx = get_ui_context(vo);
+    mp_dispatch_run(ctx->dispatch, do_uninit_priv_draw, ctx);
 }
 
 static void do_render_redraw(void *p)
@@ -221,10 +220,9 @@ static void do_render_init_texture(void *p)
     if(!priv)
         return;
 
-    priv->ctx = data->ctx;
     priv->video_src_rect = data->src;
     priv->video_dst_rect = data->dst;
-    free_texture_and_images(priv);
+    free_texture_and_images(data->ctx, priv);
 }
 
 static int reconfig(struct vo *vo, struct mp_image_params *params)
@@ -263,7 +261,7 @@ static void do_render_update_texture(void *p)
     bool is_dr_img = ((img->fields & MP_IMGFIELD_DR_FRAME) != 0);
     if (priv->dr_enabled != is_dr_img) {
         priv->dr_enabled = is_dr_img;
-        free_texture_and_images(priv);
+        free_texture_and_images(data->ctx, priv);
     }
 
     // create the corresponding texture if missing

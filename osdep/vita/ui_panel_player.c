@@ -5,6 +5,9 @@
 #include "input/input.h"
 #include "input/keycodes.h"
 
+#include <pthread.h>
+#include <stdatomic.h>
+
 enum key_act {
     KEY_ACT_DROP,
     KEY_ACT_INPUT,
@@ -15,8 +18,12 @@ enum key_act {
 struct priv_panel {
     mpv_handle *mpv_handle;
     struct MPContext *mpv_ctx;
+
     void *vo_data;
-    void (*vo_draw_fn)(void *data);
+    ui_panel_player_vo_draw_fn vo_draw_fn;
+
+    bool destroy_signaled;
+    atomic_bool destroy_done;
 };
 
 mpv_handle *mpv_create_vita(struct MPContext **p_mpctx);
@@ -34,7 +41,7 @@ void ui_panel_player_set_vo_draw_data(struct ui_context *ctx, void *data)
         priv->vo_data = ta_steal(priv, data);
 }
 
-void ui_panel_player_set_vo_draw_fn(struct ui_context *ctx, void (*fn)(void *data))
+void ui_panel_player_set_vo_draw_fn(struct ui_context *ctx, ui_panel_player_vo_draw_fn fn)
 {
     struct priv_panel *priv = ui_panel_common_get_priv(ctx, &ui_panel_player);
     if (priv)
@@ -49,6 +56,7 @@ static void on_mpv_wakeup(void *p)
 static bool player_init(struct ui_context *ctx, void *p)
 {
     struct priv_panel *priv = ctx->priv_panel;
+    priv->destroy_done = ATOMIC_VAR_INIT(false);
     priv->mpv_handle = mpv_create_vita(&priv->mpv_ctx);
     if (!priv->mpv_handle)
         return false;
@@ -68,23 +76,50 @@ static bool player_init(struct ui_context *ctx, void *p)
     return true;
 }
 
-static void player_uninit(struct ui_context *ctx)
-{
-    struct priv_panel *priv = ctx->priv_panel;
-    if (priv->mpv_handle)
-        mpv_destroy(priv->mpv_handle);
-}
-
 static void player_on_draw(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
     if (priv->vo_draw_fn && priv->vo_data)
-        priv->vo_draw_fn(priv->vo_data);
+        priv->vo_draw_fn(ctx, priv->vo_data);
+}
+
+static void *do_destroy_mpv(void *args)
+{
+    void **pp = args;
+    mpv_handle *mpv = pp[0];
+    atomic_bool *done = pp[1];
+    struct ui_context *ctx = pp[2];
+    mpv_terminate_destroy(mpv);
+    atomic_store(done, true);
+    ui_panel_common_wakeup(ctx);
+    return NULL;
+}
+
+static void wait_mpv_destruction_async(struct ui_context *ctx)
+{
+    // prevent mpv destruction from blocking current thread
+    // because some async-posted uninitializations have to be done later
+    pthread_t thread;
+    struct priv_panel *priv = ctx->priv_panel;
+    void **args = ta_new_array(priv, void*, 2);
+    args[0] = priv->mpv_handle;
+    args[1] = &priv->destroy_done;
+    args[2] = ctx;
+    pthread_create(&thread, NULL, do_destroy_mpv, args);
+    priv->mpv_ctx = NULL;
+    priv->mpv_handle = NULL;
+    priv->destroy_signaled = true;
 }
 
 static void player_on_poll(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
+    if (priv->destroy_signaled) {
+        if (atomic_load_explicit(&priv->destroy_done, memory_order_relaxed))
+            ui_panel_common_pop(ctx);
+        return;
+    }
+
     if (!priv->mpv_handle)
         return;
 
@@ -93,9 +128,7 @@ static void player_on_poll(struct ui_context *ctx)
         if (event->event_id == MPV_EVENT_NONE) {
             break;
         } else if (event->event_id == MPV_EVENT_SHUTDOWN) {
-            mpv_terminate_destroy(priv->mpv_handle);
-            priv->mpv_handle = NULL;
-            ui_panel_common_pop(ctx);
+            wait_mpv_destruction_async(ctx);
             break;
         }
     }
@@ -186,7 +219,7 @@ static void player_on_key(struct ui_context *ctx, struct ui_key *key)
 const struct ui_panel ui_panel_player = {
     .priv_size = sizeof(struct priv_panel),
     .init = player_init,
-    .uninit = player_uninit,
+    .uninit = NULL,
     .on_show = NULL,
     .on_hide = NULL,
     .on_draw = player_on_draw,
