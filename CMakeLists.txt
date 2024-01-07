@@ -389,6 +389,7 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/config.h "\
 #define CONFIGURATION           \"vita\"
 #define HAVE_GPL                1
 #define HAVE_VITA               1
+#define HAVE_ZLIB               1
 #define HAVE_STDATOMIC          1
 #define HAVE_TA_LEAK_REPORT     ${_emulator_flag}
 #define MPV_VITA_TITLE_ID       \"${mpv_vita_title_id}\"
@@ -440,9 +441,13 @@ else()
 endif()
 
 
-# libass depedencies
+# libass
 pkg_check_modules(_pkg_ass REQUIRED libass>=0.12.2)
 _add_pkg_deps(mpv_inc_dirs mpv_link_libs _pkg_ass)
+
+# zlib
+pkg_check_modules(_pkg_zlib REQUIRED zlib)
+_add_pkg_deps(mpv_inc_dirs mpv_link_libs _pkg_zlib)
 
 if(BUILD_VITA)
     list(APPEND mpv_src_files
