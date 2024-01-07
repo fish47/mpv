@@ -165,7 +165,6 @@ struct path_item {
 };
 
 struct cache_data {
-    struct ui_font *font;
     struct path_item *path_items;
     int path_item_count;
     char *tmp_str_buf;
@@ -582,8 +581,6 @@ static bool files_init(struct ui_context *ctx, void *p)
 static void files_on_show(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    if (!priv->cache_data.font)
-        ui_render_driver_vita.font_init(ctx, &priv->cache_data.font);
     fill_path_items(priv, NULL, false);
 }
 
@@ -591,8 +588,6 @@ static void files_on_hide(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
-    if (cache->font)
-        ui_render_driver_vita.font_uninit(ctx, &cache->font);
     TA_FREEP(&cache->tmp_str_buf);
     TA_FREEP(&cache->path_str_pool);
     TA_FREEP(&cache->path_items);
@@ -608,13 +603,17 @@ static bool has_scroll_bar(struct ui_context *ctx)
 
 static void do_draw_titles(struct ui_context *ctx)
 {
+    struct ui_font *font = ui_panel_common_get_font(ctx);
+    if (!font)
+        return;
+
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
-
-    struct ui_font_draw_args args;
-    args.size = LAYOUT_COMMON_TEXT_FONT_SIZE;
-    args.color = UI_COLOR_TEXT;
-    args.y = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_TEXT_P;
+    struct ui_font_draw_args args = {
+        .size = LAYOUT_COMMON_TEXT_FONT_SIZE,
+        .color = UI_COLOR_TEXT,
+        .y = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_TEXT_P,
+    };
 
     char buf[30];
     for (size_t i = 0; i < MP_ARRAY_SIZE(field_title_spec_list); ++i) {
@@ -630,7 +629,7 @@ static void do_draw_titles(struct ui_context *ctx)
             args.text = spec->draw_name;
         }
         args.x = spec->draw_x;
-        ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+        ui_render_driver_vita.draw_font(ctx, font, &args);
     }
 }
 
@@ -688,7 +687,8 @@ static void do_draw_content(struct ui_context *ctx, int flags, int fields)
 {
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
-    if (!cache->font)
+    struct ui_font *font = ui_panel_common_get_font(ctx);
+    if (!font)
         return;
 
     struct ui_font_draw_args args;
@@ -740,19 +740,19 @@ static void do_draw_content(struct ui_context *ctx, int flags, int fields)
         if (fields & PATH_ITEM_FIELD_NAME) {
             args.x = LAYOUT_ITEM_NAME_L;
             args.text = format_name_text(priv, &cache->tmp_str_buf, item);
-            ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+            ui_render_driver_vita.draw_font(ctx, font, &args);
         }
 
         if (fields & PATH_ITEM_FIELD_SIZE) {
             args.x = LAYOUT_ITEM_SIZE_L;
             args.text = item->str_size;
-            ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+            ui_render_driver_vita.draw_font(ctx, font, &args);
         }
 
         if (fields & PATH_ITEM_FIELD_DATE) {
             args.x = LAYOUT_ITEM_DATE_L;
             args.text = item->str_date;
-            ui_render_driver_vita.draw_font(ctx, cache->font, &args);
+            ui_render_driver_vita.draw_font(ctx, font, &args);
         }
 
         draw_top += LAYOUT_COMMON_ITEM_ROW_H;

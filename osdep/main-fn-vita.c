@@ -24,6 +24,9 @@ struct ui_context_internal {
     struct ui_panel_item *panel_stack;
     const struct ui_panel *top_panel;
 
+    bool font_init;
+    struct ui_font *font_impl;
+
     bool want_redraw;
     int64_t frame_start;
     uint32_t key_bits;
@@ -109,14 +112,13 @@ static void ui_context_destroy(void *p)
     struct ui_context_internal *priv = ctx->priv_context;
     pthread_mutex_destroy(&priv->lock);
     pthread_cond_destroy(&priv->wakeup);
-    if (ctx->priv_render) {
+
+    if (priv->font_impl)
+        ui_render_driver_vita.font_uninit(ctx, &priv->font_impl);
+    if (ctx->priv_render)
         ui_render_driver_vita.uninit(ctx);
-        TA_FREEP(&ctx->priv_render);
-    }
-    if (ctx->priv_platform) {
+    if (ctx->priv_platform)
         ui_platform_driver_vita.uninit(ctx);
-        TA_FREEP(&ctx->priv_platform);
-    }
 }
 
 static struct ui_context *ui_context_new(int argc, char *argv[])
@@ -314,4 +316,14 @@ int64_t ui_panel_common_get_frame_time(struct ui_context *ctx)
 {
     struct ui_context_internal *priv = ctx->priv_context;
     return priv->frame_start;
+}
+
+struct ui_font *ui_panel_common_get_font(struct ui_context *ctx)
+{
+    struct ui_context_internal *priv = ctx->priv_context;
+    if (!priv->font_init) {
+        priv->font_init = true;
+        ui_render_driver_vita.font_init(ctx, &priv->font_impl);
+    }
+    return priv->font_impl;
 }
