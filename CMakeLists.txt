@@ -389,6 +389,7 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/config.h "\
 #define CONFIGURATION           \"vita\"
 #define HAVE_GPL                1
 #define HAVE_VITA               1
+#define HAVE_STDATOMIC          1
 #define HAVE_TA_LEAK_REPORT     ${_emulator_flag}
 #define MPV_VITA_TITLE_ID       \"${mpv_vita_title_id}\"
 ")
