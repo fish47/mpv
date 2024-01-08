@@ -405,7 +405,7 @@ static void do_fill_path_items(struct priv_panel *priv, DIR *dir)
         bstr_xappend(priv, &item_path, name);
 
         struct stat file_stat;
-        if (stat((char*) item_path.start, &file_stat) != 0)
+        if (stat(BSTR_CAST(item_path), &file_stat) != 0)
             continue;
 
         // name
@@ -465,7 +465,7 @@ static void fill_path_items(struct priv_panel *priv, char *match_name, bool rese
     if (!priv->work_dir.len)
         return;
 
-    DIR *dir = opendir((char*) priv->work_dir.start);
+    DIR *dir = opendir(BSTR_CAST(priv->work_dir));
     if (dir) {
         do_fill_path_items(priv, dir);
         closedir(dir);
@@ -539,7 +539,7 @@ static void push_path(struct ui_context *ctx)
         struct ui_panel_player_init_params *p = talloc_ptrtype(priv, p);
         bstr file_path = bstrdup(priv, priv->work_dir);
         join_path(priv, &file_path, item);
-        p->path = ta_steal(p, (char*) file_path.start);
+        p->path = ta_steal(p, BSTR_CAST(file_path));
         ui_panel_common_push(ctx, &ui_panel_player, p);
     }
 }
@@ -561,7 +561,7 @@ static void pop_path(struct ui_context *ctx)
     priv->work_dir.len = sep;
 
     // try to relocate popped position data if it is not matched
-    char *match_name = (char*) priv->work_dir.start + sep + 1;
+    char *match_name = BSTR_CAST(priv->work_dir) + sep + 1;
     MP_TARRAY_POP(priv->cursor_pos_stack, priv->cursor_pos_count, &priv->cursor_pos);
     fill_path_items(priv, match_name, false);
     ui_panel_common_invalidate(ctx);
