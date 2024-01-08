@@ -24,7 +24,8 @@ struct ui_panel {
 };
 
 struct ui_panel_player_init_params {
-    char *path;
+    char *file_path;
+    bool enable_perf;
 };
 
 typedef void (*ui_panel_run_fn)(void *data);
@@ -45,6 +46,7 @@ void ui_panel_common_pop_all(struct ui_context *ctx);
 
 int64_t ui_panel_common_get_frame_time(struct ui_context *ctx);
 struct ui_font *ui_panel_common_get_font(struct ui_context *ctx);
+bool ui_panel_common_check_pressed_keys(struct ui_context *ctx, enum ui_key_code *keys, int n);
 
 void *ui_panel_player_get_vo_draw_data(struct ui_context *ctx);
 void ui_panel_player_set_vo_draw_data(struct ui_context *ctx, void *data);

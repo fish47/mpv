@@ -570,22 +570,39 @@ static int parse_byte_size(struct mp_log *log, const m_option_t *opt,
     return 1;
 }
 
-char *format_file_size(int64_t size)
+struct file_size_args {
+    const char *fmt;
+    double val;
+};
+
+static struct file_size_args do_format_file_size(int64_t size)
 {
     double s = size;
     if (size < 1024)
-        return talloc_asprintf(NULL, "%.0f B", s);
+        return (struct file_size_args) {"%.0f B", s};
 
     if (size < (1024 * 1024))
-        return talloc_asprintf(NULL, "%.3f KiB", s / (1024.0));
+        return (struct file_size_args) {"%.3f KiB", s / (1024.0)};
 
     if (size < (1024 * 1024 * 1024))
-        return talloc_asprintf(NULL, "%.3f MiB", s / (1024.0 * 1024.0));
+        return (struct file_size_args) {"%.3f MiB", s / (1024.0 * 1024.0)};
 
     if (size < (1024LL * 1024LL * 1024LL * 1024LL))
-        return talloc_asprintf(NULL, "%.3f GiB", s / (1024.0 * 1024.0 * 1024.0));
+        return (struct file_size_args) {"%.3f GiB", s / (1024.0 * 1024.0 * 1024.0)};
 
-    return talloc_asprintf(NULL, "%.3f TiB", s / (1024.0 * 1024.0 * 1024.0 * 1024.0));
+    return (struct file_size_args) {"%.3f TiB", s / (1024.0 * 1024.0 * 1024.0 * 1024.0)};
+}
+
+char *format_file_size(int64_t size)
+{
+    struct file_size_args args = do_format_file_size(size);
+    return talloc_asprintf(NULL, args.fmt, args.val);
+}
+
+int format_file_size_sn(char *buf, int n, int64_t size)
+{
+    struct file_size_args args = do_format_file_size(size);
+    return snprintf(buf, n, args.fmt, args.val);
 }
 
 static char *pretty_print_byte_size(const m_option_t *opt, const void *val)

@@ -126,6 +126,7 @@ enum mp_voctrl {
     VOCTRL_EXTERNAL_RESIZE,
 
     VOCTRL_PREPARE_DR_DECODER,          // {const AVCode*, AVDictionary**}
+    VOCTRL_GET_DR_STATS,                // {int, size_t}
 };
 
 #define VO_TRUE         true

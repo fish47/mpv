@@ -1,5 +1,7 @@
 #include "ui_context.h"
 #include "ui_panel.h"
+#include "player_perf.h"
+
 #include "ta/ta.h"
 #include "player/core.h"
 #include "input/input.h"
@@ -18,6 +20,7 @@ enum key_act {
 struct priv_panel {
     mpv_handle *mpv_handle;
     struct MPContext *mpv_ctx;
+    struct player_perf_ctx *perf_ctx;
 
     void *vo_data;
     ui_panel_player_vo_draw_fn vo_draw_fn;
@@ -70,10 +73,20 @@ static bool player_init(struct ui_context *ctx, void *p)
 
     struct ui_panel_player_init_params *params = p;
     if (params) {
-        const char *args[] = { "loadfile", params->path, NULL };
-        mpv_command(priv->mpv_handle, args);
+        if (params->enable_perf)
+            priv->perf_ctx = player_perf_create_ctx(priv);
+        mpv_command(priv->mpv_handle, (const char*[]) {
+            "loadfile", params->file_path, NULL
+        });
     }
     return true;
+}
+
+static void player_uninit(struct ui_context *ctx)
+{
+    struct priv_panel *priv = ctx->priv_panel;
+    if (priv->perf_ctx)
+        player_perf_stop(priv->perf_ctx, ctx);
 }
 
 static void player_on_draw(struct ui_context *ctx)
@@ -81,6 +94,8 @@ static void player_on_draw(struct ui_context *ctx)
     struct priv_panel *priv = ctx->priv_panel;
     if (priv->vo_draw_fn && priv->vo_data)
         priv->vo_draw_fn(ctx, priv->vo_data);
+    if (priv->perf_ctx)
+        player_perf_draw(priv->perf_ctx, ctx);
 }
 
 static void *do_destroy_mpv(void *args)
@@ -122,6 +137,9 @@ static void player_on_poll(struct ui_context *ctx)
 
     if (!priv->mpv_handle)
         return;
+
+    if (priv->perf_ctx)
+        player_perf_poll(priv->perf_ctx, ctx, priv->mpv_ctx);
 
     while (true) {
         mpv_event *event = mpv_wait_event(priv->mpv_handle, 0);
@@ -219,7 +237,7 @@ static void player_on_key(struct ui_context *ctx, struct ui_key *key)
 const struct ui_panel ui_panel_player = {
     .priv_size = sizeof(struct priv_panel),
     .init = player_init,
-    .uninit = NULL,
+    .uninit = player_uninit,
     .on_show = NULL,
     .on_hide = NULL,
     .on_draw = player_on_draw,

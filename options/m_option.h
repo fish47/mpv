@@ -400,6 +400,8 @@ struct m_option {
 
 char *format_file_size(int64_t size);
 
+int format_file_size_sn(char *buf, int n, int64_t size);
+
 // The option is forbidden in config files.
 #define M_OPT_NOCFG             (1 << 2)
 

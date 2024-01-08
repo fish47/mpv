@@ -7,6 +7,7 @@
 #include "video/img_format.h"
 #include "video/fmt-conversion.h"
 
+#include <stdatomic.h>
 #include <libavutil/imgutils.h>
 
 enum render_act {
@@ -15,6 +16,11 @@ enum render_act {
     RENDER_ACT_TEX_INIT,
     RENDER_ACT_TEX_UPDATE,
     RENDER_ACT_MAX,
+};
+
+struct vo_stats {
+    atomic_int dr_bytes;
+    atomic_int dr_count;
 };
 
 struct init_tex_data {
@@ -41,6 +47,7 @@ struct priv_draw {
 struct priv_vo {
     bool enable_dr;
     void *cb_data_slots[RENDER_ACT_MAX];
+    struct vo_stats vo_stats;
 };
 
 static ui_panel_run_fn get_render_act_fn(enum render_act act);
@@ -182,6 +189,8 @@ static int preinit(struct vo *vo)
 {
     struct priv_vo *priv = vo->priv;
     memset(priv->cb_data_slots, 0, sizeof(priv->cb_data_slots));
+    priv->vo_stats.dr_bytes = ATOMIC_VAR_INIT(0);
+    priv->vo_stats.dr_count = ATOMIC_VAR_INIT(0);
     render_act_post_ref(vo, RENDER_ACT_INIT, get_ui_context(vo));
     return 0;
 }
@@ -305,6 +314,14 @@ static int control(struct vo *vo, uint32_t request, void *data)
         struct ui_context *ctx = get_ui_context(vo);
         priv->enable_dr = ui_render_driver_vita.dr_prepare(ctx, codec, opts);
         return VO_TRUE;
+    } else if (request == VOCTRL_GET_DR_STATS) {
+        void **pack = data;
+        int *frame_count = pack[0];
+        size_t *frame_bytes = pack[1];
+        struct priv_vo *priv = vo->priv;
+        *frame_count = atomic_load_explicit(&priv->vo_stats.dr_count, memory_order_relaxed);
+        *frame_bytes = atomic_load_explicit(&priv->vo_stats.dr_bytes, memory_order_relaxed);
+        return VO_TRUE;
     }
     return VO_NOTIMPL;
 }
@@ -329,8 +346,11 @@ static ui_panel_run_fn get_render_act_fn(enum render_act act)
 static void do_free_vram(void *opaque, uint8_t *data)
 {
     void *vram = data;
-    struct ui_context *ctx = opaque;
+    struct vo *vo = opaque;
+    struct priv_vo *priv = vo->priv;
+    struct ui_context *ctx = get_ui_context(vo);
     ui_render_driver_vita.dr_vram_uninit(ctx, &vram);
+    atomic_fetch_add_explicit(&priv->vo_stats.dr_count, 1, memory_order_relaxed);
 }
 
 static struct mp_image *do_alloc_dr_image(struct vo *vo, int fmt, int w, int h)
@@ -353,7 +373,7 @@ static struct mp_image *do_alloc_dr_image(struct vo *vo, int fmt, int w, int h)
     if (!mpi)
         goto fail;
 
-    mpi->bufs[0] = av_buffer_create(vram, vram_size, do_free_vram, ctx, 0);
+    mpi->bufs[0] = av_buffer_create(vram, vram_size, do_free_vram, vo, 0);
     if (!mpi->bufs[0])
         goto fail;
 
@@ -362,6 +382,9 @@ static struct mp_image *do_alloc_dr_image(struct vo *vo, int fmt, int w, int h)
     av_image_fill_arrays(mpi->planes, mpi->stride, vram,
                          imgfmt2pixfmt(fmt), rounded_w, rounded_h, 1);
 
+    struct priv_vo *priv = vo->priv;
+    atomic_store(&priv->vo_stats.dr_bytes, vram_size);
+    atomic_fetch_add_explicit(&priv->vo_stats.dr_count, 1, memory_order_relaxed);
     return mpi;
 
 fail:

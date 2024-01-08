@@ -81,6 +81,7 @@ static void handle_platform_keys(struct ui_context *ctx)
     if (!changed_mask)
         return;
 
+    in->key_bits = new_bits;
     for (int i = 0; i < UI_KEY_CODE_VITA_END; ++i) {
         uint32_t key_bit = 1 << i;
         if (key_bit & changed_mask) {
@@ -93,8 +94,17 @@ static void handle_platform_keys(struct ui_context *ctx)
             }
         }
     }
+}
 
-    in->key_bits = new_bits;
+bool ui_panel_common_check_pressed_keys(struct ui_context *ctx, enum ui_key_code *keys, int n)
+{
+    struct ui_context_internal *in = ctx->priv_context;
+    for (int i = 0; i < n; ++i) {
+        uint32_t key_bit = 1 << keys[i];
+        if (!(in->key_bits & key_bit))
+            return false;
+    }
+    return (n > 0);
 }
 
 static void handle_platform_events(struct ui_context *ctx)
