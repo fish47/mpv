@@ -22,7 +22,7 @@ struct ui_context_internal {
 
     int panel_count;
     struct ui_panel_item *panel_stack;
-    const struct ui_panel *top_panel;
+    const struct ui_panel *panel_top;
 
     bool font_init;
     struct ui_font *font_impl;
@@ -32,34 +32,34 @@ struct ui_context_internal {
     uint32_t key_bits;
 };
 
-static void do_wait_next_frame(struct ui_context_internal *priv)
+static void do_wait_next_frame(struct ui_context_internal *in)
 {
     // handle pending wakeup request
-    if (priv->need_wakeup)
+    if (in->need_wakeup)
         return;
 
-    int64_t frame_next = priv->frame_start + FRAME_INTERVAL_US;
+    int64_t frame_next = in->frame_start + FRAME_INTERVAL_US;
     int64_t wait_time = MPMAX(frame_next - mp_time_us(), 0);
     struct timespec ts = mp_time_us_to_timespec(wait_time);
-    pthread_cond_timedwait(&priv->wakeup, &priv->lock, &ts);
+    pthread_cond_timedwait(&in->wakeup, &in->lock, &ts);
 }
 
 
 static void wait_next_frame(struct ui_context *ctx)
 {
-    struct ui_context_internal *priv = ctx->priv_context;
-    pthread_mutex_lock(&priv->lock);
-    do_wait_next_frame(priv);
-    priv->need_wakeup = false;
-    pthread_mutex_unlock(&priv->lock);
+    struct ui_context_internal *in = ctx->priv_context;
+    pthread_mutex_lock(&in->lock);
+    do_wait_next_frame(in);
+    in->need_wakeup = false;
+    pthread_mutex_unlock(&in->lock);
 }
 
 static bool advnace_frame_time(struct ui_context *ctx)
 {
-    struct ui_context_internal *priv = ctx->priv_context;
-    int frame_count = (mp_time_us() - priv->frame_start) / FRAME_INTERVAL_US;
+    struct ui_context_internal *in = ctx->priv_context;
+    int frame_count = (mp_time_us() - in->frame_start) / FRAME_INTERVAL_US;
     if (frame_count > 0) {
-        priv->frame_start += frame_count * FRAME_INTERVAL_US;
+        in->frame_start += frame_count * FRAME_INTERVAL_US;
         return true;
     }
     return false;
@@ -67,15 +67,15 @@ static bool advnace_frame_time(struct ui_context *ctx)
 
 static const struct ui_panel *get_top_panel(struct ui_context *ctx)
 {
-    struct ui_context_internal *priv = ctx->priv_context;
-    return priv->top_panel;
+    struct ui_context_internal *in = ctx->priv_context;
+    return in->panel_top;
 }
 
 static void handle_platform_keys(struct ui_context *ctx)
 {
-    struct ui_context_internal *priv = ctx->priv_context;
+    struct ui_context_internal *in = ctx->priv_context;
     uint32_t new_bits = ui_platform_driver_vita.poll_keys(ctx);
-    uint32_t changed_mask = new_bits ^ priv->key_bits;
+    uint32_t changed_mask = new_bits ^ in->key_bits;
     if (!changed_mask)
         return;
 
@@ -92,7 +92,7 @@ static void handle_platform_keys(struct ui_context *ctx)
         }
     }
 
-    priv->key_bits = new_bits;
+    in->key_bits = new_bits;
 }
 
 static void handle_platform_events(struct ui_context *ctx)
@@ -109,12 +109,12 @@ static void on_dispatch_wakeup(void *p)
 static void ui_context_destroy(void *p)
 {
     struct ui_context *ctx = p;
-    struct ui_context_internal *priv = ctx->priv_context;
-    pthread_mutex_destroy(&priv->lock);
-    pthread_cond_destroy(&priv->wakeup);
+    struct ui_context_internal *in = ctx->priv_context;
+    pthread_mutex_destroy(&in->lock);
+    pthread_cond_destroy(&in->wakeup);
 
-    if (priv->font_impl)
-        ui_render_driver_vita.font_uninit(ctx, &priv->font_impl);
+    if (in->font_impl)
+        ui_render_driver_vita.font_uninit(ctx, &in->font_impl);
     if (ctx->priv_render)
         ui_render_driver_vita.uninit(ctx);
     if (ctx->priv_platform)
@@ -128,10 +128,10 @@ static struct ui_context *ui_context_new(int argc, char *argv[])
     ctx->dispatch = mp_dispatch_create(ctx);
     mp_dispatch_set_wakeup_fn(ctx->dispatch, on_dispatch_wakeup, ctx);
 
-    struct ui_context_internal *priv = talloc_zero_size(ctx, sizeof(struct ui_context_internal));
-    ctx->priv_context = priv;
-    pthread_mutex_init(&priv->lock, NULL);
-    pthread_cond_init(&priv->wakeup, NULL);
+    struct ui_context_internal *in = talloc_zero_size(ctx, sizeof(struct ui_context_internal));
+    ctx->priv_context = in;
+    pthread_mutex_init(&in->lock, NULL);
+    pthread_cond_init(&in->wakeup, NULL);
 
     ctx->priv_platform = talloc_zero_size(ctx, ui_platform_driver_vita.priv_size);
     if (!ui_platform_driver_vita.init(ctx, argc, argv))
@@ -163,9 +163,9 @@ static bool has_panel(struct ui_context *ctx, const struct ui_panel *panel)
     if (get_top_panel(ctx) == panel)
         return true;
 
-    struct ui_context_internal *priv = ctx->priv_context;
-    for (int i = 0; i < priv->panel_count; ++i)
-        if (priv->panel_stack[i].panel == panel)
+    struct ui_context_internal *in = ctx->priv_context;
+    for (int i = 0; i < in->panel_count; ++i)
+        if (in->panel_stack[i].panel == panel)
             return true;
     return false;
 }
@@ -177,53 +177,53 @@ static void do_push_panel(struct ui_context *ctx, const struct ui_panel *panel, 
         return;
 
     // hide current panel
-    struct ui_context_internal *priv = ctx->priv_context;
-    if (priv->top_panel) {
+    struct ui_context_internal *in = ctx->priv_context;
+    if (in->panel_top) {
         struct ui_panel_item save_item = {
             .data = ctx->priv_panel,
-            .panel = priv->top_panel,
+            .panel = in->panel_top,
         };
-        MP_TARRAY_APPEND(ctx, priv->panel_stack, priv->panel_count, save_item);
-        if (priv->top_panel->on_hide)
-            priv->top_panel->on_hide(ctx);
+        MP_TARRAY_APPEND(ctx, in->panel_stack, in->panel_count, save_item);
+        if (in->panel_top->on_hide)
+            in->panel_top->on_hide(ctx);
     }
 
     // show new panel
-    priv->top_panel = panel;
+    in->panel_top = panel;
     ctx->priv_panel = talloc_zero_size(ctx, panel->priv_size);
-    priv->top_panel->init(ctx, data);
-    if (priv->top_panel->on_show)
-        priv->top_panel->on_show(ctx);
+    in->panel_top->init(ctx, data);
+    if (in->panel_top->on_show)
+        in->panel_top->on_show(ctx);
 }
 
 static void do_pop_panel(struct ui_context *ctx)
 {
-    struct ui_context_internal *priv = ctx->priv_context;
-    if (!priv->top_panel)
+    struct ui_context_internal *in = ctx->priv_context;
+    if (!in->panel_top)
         return;
 
-    if (priv->top_panel->uninit)
-        priv->top_panel->uninit(ctx);
-    priv->top_panel = NULL;
+    if (in->panel_top->uninit)
+        in->panel_top->uninit(ctx);
+    in->panel_top = NULL;
     TA_FREEP(&ctx->priv_panel);
 
     struct ui_panel_item item;
-    bool has_panel = MP_TARRAY_POP(priv->panel_stack, priv->panel_count, &item);
+    bool has_panel = MP_TARRAY_POP(in->panel_stack, in->panel_count, &item);
     if (has_panel) {
         ctx->priv_panel = item.data;
-        priv->top_panel = item.panel;
-        if (priv->top_panel->on_show)
-            priv->top_panel->on_show(ctx);
+        in->panel_top = item.panel;
+        if (in->panel_top->on_show)
+            in->panel_top->on_show(ctx);
     }
 }
 
 static void handle_redraw(struct ui_context *ctx)
 {
-    struct ui_context_internal *priv = ctx->priv_context;
-    if (!priv->want_redraw)
+    struct ui_context_internal *in = ctx->priv_context;
+    if (!in->want_redraw)
         return;
 
-    priv->want_redraw = false;
+    in->want_redraw = false;
     ui_render_driver_vita.render_start(ctx);
     const struct ui_panel *panel = get_top_panel(ctx);
     if (panel)
@@ -277,19 +277,19 @@ void *ui_panel_common_get_priv(struct ui_context *ctx, const struct ui_panel *pa
 
 void ui_panel_common_wakeup(struct ui_context *ctx)
 {
-    struct ui_context_internal *priv = ctx->priv_context;
-    pthread_mutex_lock(&priv->lock);
-    if (!priv->need_wakeup) {
-        priv->need_wakeup = true;
-        pthread_cond_signal(&priv->wakeup);
+    struct ui_context_internal *in = ctx->priv_context;
+    pthread_mutex_lock(&in->lock);
+    if (!in->need_wakeup) {
+        in->need_wakeup = true;
+        pthread_cond_signal(&in->wakeup);
     }
-    pthread_mutex_unlock(&priv->lock);
+    pthread_mutex_unlock(&in->lock);
 }
 
 void ui_panel_common_invalidate(struct ui_context *ctx)
 {
-    struct ui_context_internal *priv = ctx->priv_context;
-    priv->want_redraw = true;
+    struct ui_context_internal *in = ctx->priv_context;
+    in->want_redraw = true;
 }
 
 void ui_panel_common_push(struct ui_context *ctx, const struct ui_panel *panel, void *data)
@@ -314,16 +314,16 @@ void ui_panel_common_pop_all(struct ui_context *ctx)
 
 int64_t ui_panel_common_get_frame_time(struct ui_context *ctx)
 {
-    struct ui_context_internal *priv = ctx->priv_context;
-    return priv->frame_start;
+    struct ui_context_internal *in = ctx->priv_context;
+    return in->frame_start;
 }
 
 struct ui_font *ui_panel_common_get_font(struct ui_context *ctx)
 {
-    struct ui_context_internal *priv = ctx->priv_context;
-    if (!priv->font_init) {
-        priv->font_init = true;
-        ui_render_driver_vita.font_init(ctx, &priv->font_impl);
+    struct ui_context_internal *in = ctx->priv_context;
+    if (!in->font_init) {
+        in->font_init = true;
+        ui_render_driver_vita.font_init(ctx, &in->font_impl);
     }
-    return priv->font_impl;
+    return in->font_impl;
 }
