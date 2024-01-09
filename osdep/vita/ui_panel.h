@@ -27,14 +27,22 @@ struct ui_panel_player_init_params {
     char *path;
 };
 
+typedef void (*ui_panel_run_fn)(void *data);
 typedef void (*ui_panel_player_vo_draw_fn)(struct ui_context *ctx, void *data);
 
 void ui_panel_common_wakeup(struct ui_context *ctx);
 void ui_panel_common_invalidate(struct ui_context *ctx);
 void *ui_panel_common_get_priv(struct ui_context *ctx, const struct ui_panel *panel);
+
+void ui_panel_common_run_sync(struct ui_context *ctx, ui_panel_run_fn fn, void *data);
+void ui_panel_common_run_post(struct ui_context *ctx, ui_panel_run_fn fn, void *data);
+void ui_panel_common_run_post_steal(struct ui_context *ctx, ui_panel_run_fn fn, void *data);
+void ui_panel_common_run_cancel(struct ui_context *ctx, ui_panel_run_fn fn, void *data);
+
 void ui_panel_common_push(struct ui_context *ctx, const struct ui_panel *panel, void *data);
 void ui_panel_common_pop(struct ui_context *ctx);
 void ui_panel_common_pop_all(struct ui_context *ctx);
+
 int64_t ui_panel_common_get_frame_time(struct ui_context *ctx);
 struct ui_font *ui_panel_common_get_font(struct ui_context *ctx);
 

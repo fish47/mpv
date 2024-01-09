@@ -1,12 +1,13 @@
 #include <pthread.h>
 
+#include "ta/ta_talloc.h"
 #include "common/common.h"
+#include "misc/dispatch.h"
 #include "osdep/timer.h"
 #include "osdep/vita/ui_context.h"
 #include "osdep/vita/ui_device.h"
 #include "osdep/vita/ui_driver.h"
 #include "osdep/vita/ui_panel.h"
-#include "ta/ta_talloc.h"
 
 #define FRAME_INTERVAL_US (1 * 1000 * 1000 / 60)
 
@@ -19,6 +20,7 @@ struct ui_context_internal {
     bool need_wakeup;
     pthread_mutex_t lock;
     pthread_cond_t wakeup;
+    struct mp_dispatch_queue *dispatch;
 
     int panel_count;
     struct ui_panel_item *panel_stack;
@@ -106,7 +108,7 @@ static void on_dispatch_wakeup(void *p)
     ui_panel_common_wakeup(p);
 }
 
-static void ui_context_destroy(void *p)
+static void destroy_ui_context(void *p)
 {
     struct ui_context *ctx = p;
     struct ui_context_internal *in = ctx->priv_context;
@@ -121,17 +123,22 @@ static void ui_context_destroy(void *p)
         ui_platform_driver_vita.uninit(ctx);
 }
 
+static void *do_new_context_internal(void *ctx)
+{
+    struct ui_context_internal *in = talloc_zero_size(ctx, sizeof(struct ui_context_internal));
+    in->dispatch = mp_dispatch_create(in);
+    mp_dispatch_set_wakeup_fn(in->dispatch, on_dispatch_wakeup, ctx);
+    pthread_mutex_init(&in->lock, NULL);
+    pthread_cond_init(&in->wakeup, NULL);
+    return in;
+}
+
 static struct ui_context *ui_context_new(int argc, char *argv[])
 {
     struct ui_context *ctx = talloc_zero_size(NULL, sizeof(struct ui_context));
-    talloc_set_destructor(ctx, ui_context_destroy);
-    ctx->dispatch = mp_dispatch_create(ctx);
-    mp_dispatch_set_wakeup_fn(ctx->dispatch, on_dispatch_wakeup, ctx);
+    talloc_set_destructor(ctx, destroy_ui_context);
 
-    struct ui_context_internal *in = talloc_zero_size(ctx, sizeof(struct ui_context_internal));
-    ctx->priv_context = in;
-    pthread_mutex_init(&in->lock, NULL);
-    pthread_cond_init(&in->wakeup, NULL);
+    ctx->priv_context = do_new_context_internal(ctx);
 
     ctx->priv_platform = talloc_zero_size(ctx, ui_platform_driver_vita.priv_size);
     if (!ui_platform_driver_vita.init(ctx, argc, argv))
@@ -231,6 +238,12 @@ static void handle_redraw(struct ui_context *ctx)
     ui_render_driver_vita.render_end(ctx);
 }
 
+static struct mp_dispatch_queue *get_dispatch(struct ui_context *ctx)
+{
+    struct ui_context_internal *in = ctx->priv_context;
+    return in->dispatch;
+}
+
 static void main_loop(struct ui_context *ctx)
 {
     if (!ctx)
@@ -243,7 +256,7 @@ static void main_loop(struct ui_context *ctx)
     while (true) {
         // poll and run pending async jobs
         handle_panel_events(ctx);
-        mp_dispatch_queue_process(ctx->dispatch, 0);
+        mp_dispatch_queue_process(get_dispatch(ctx), 0);
 
         if (advnace_frame_time(ctx)) {
             handle_platform_keys(ctx);
@@ -326,4 +339,24 @@ struct ui_font *ui_panel_common_get_font(struct ui_context *ctx)
         ui_render_driver_vita.font_init(ctx, &in->font_impl);
     }
     return in->font_impl;
+}
+
+void ui_panel_common_run_sync(struct ui_context *ctx, ui_panel_run_fn fn, void *data)
+{
+    mp_dispatch_run(get_dispatch(ctx), fn, data);
+}
+
+void ui_panel_common_run_post(struct ui_context *ctx, ui_panel_run_fn fn, void *data)
+{
+    mp_dispatch_enqueue(get_dispatch(ctx), fn, data);
+}
+
+void ui_panel_common_run_post_steal(struct ui_context *ctx, ui_panel_run_fn fn, void *data)
+{
+    mp_dispatch_enqueue_autofree(get_dispatch(ctx), fn, data);
+}
+
+void ui_panel_common_run_cancel(struct ui_context *ctx, ui_panel_run_fn fn, void *data)
+{
+    mp_dispatch_cancel_fn(get_dispatch(ctx), fn, data);
 }

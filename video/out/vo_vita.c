@@ -43,7 +43,7 @@ struct priv_vo {
     void *cb_data_slots[RENDER_ACT_MAX];
 };
 
-static mp_dispatch_fn get_render_act_fn(enum render_act act);
+static ui_panel_run_fn get_render_act_fn(enum render_act act);
 
 static struct ui_context *get_ui_context(struct vo *vo)
 {
@@ -76,22 +76,22 @@ static void free_texture_and_images(struct ui_context *ctx, struct priv_draw *pr
 static void render_act_do_modify(struct vo *vo, enum render_act act,
                                  void *data, bool steal)
 {
-    mp_dispatch_fn func = get_render_act_fn(act);
+    ui_panel_run_fn func = get_render_act_fn(act);
     if (!func)
         return;
 
     // cancel pending action
     struct priv_vo *priv = vo->priv;
     struct ui_context *ctx = get_ui_context(vo);
-    mp_dispatch_cancel_fn(ctx->dispatch, func, priv->cb_data_slots[act]);
+    ui_panel_common_run_cancel(ctx, func, priv->cb_data_slots[act]);
 
     // enqueue new action
     priv->cb_data_slots[act] = data;
     if (data) {
         if (steal)
-            mp_dispatch_enqueue_autofree(ctx->dispatch, func, data);
+            ui_panel_common_run_post_steal(ctx, func, data);
         else
-            mp_dispatch_enqueue(ctx->dispatch, func, data);
+            ui_panel_common_run_post(ctx, func, data);
     }
 }
 
@@ -200,7 +200,7 @@ static void uninit(struct vo *vo)
         render_act_remove(vo, i);
 
     struct ui_context *ctx = get_ui_context(vo);
-    mp_dispatch_run(ctx->dispatch, do_uninit_priv_draw, ctx);
+    ui_panel_common_run_sync(ctx, do_uninit_priv_draw, ctx);
 }
 
 static void do_render_redraw(void *p)
@@ -309,7 +309,7 @@ static int control(struct vo *vo, uint32_t request, void *data)
     return VO_NOTIMPL;
 }
 
-static mp_dispatch_fn get_render_act_fn(enum render_act act)
+static ui_panel_run_fn get_render_act_fn(enum render_act act)
 {
     switch (act) {
     case RENDER_ACT_INIT:
