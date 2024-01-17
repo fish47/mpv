@@ -31,7 +31,9 @@ struct ui_context_internal {
 
     bool want_redraw;
     int64_t frame_start;
-    uint32_t key_bits;
+
+    uint32_t key_bits_polled;
+    uint32_t key_bits_ignore;
 };
 
 static void do_wait_next_frame(struct ui_context_internal *in)
@@ -77,21 +79,27 @@ static void handle_platform_keys(struct ui_context *ctx)
 {
     struct ui_context_internal *in = ctx->priv_context;
     uint32_t new_bits = ui_platform_driver_vita.poll_keys(ctx);
-    uint32_t changed_mask = new_bits ^ in->key_bits;
+    uint32_t changed_mask = new_bits ^ in->key_bits_polled;
     if (!changed_mask)
         return;
 
-    in->key_bits = new_bits;
+    in->key_bits_polled = new_bits;
     for (int i = 0; i < UI_KEY_CODE_VITA_END; ++i) {
         uint32_t key_bit = 1 << i;
-        if (key_bit & changed_mask) {
-            bool pressed = key_bit & new_bits;
-            enum ui_key_state state = pressed ? UI_KEY_STATE_DOWN : UI_KEY_STATE_UP;
-            const struct ui_panel *panel = get_top_panel(ctx);
-            if (panel) {
-                struct ui_key key = { .code = i, .state = state };
-                panel->on_key(ctx, &key);
-            }
+        if (!(changed_mask & key_bit))
+            continue;
+
+        // ignore pressed keys before current panel is shown
+        bool pressed = key_bit & new_bits;
+        if (!pressed && (in->key_bits_ignore & key_bit)) {
+            in->key_bits_ignore &= ~key_bit;
+            continue;
+        }
+
+        enum ui_key_state state = pressed ? UI_KEY_STATE_DOWN : UI_KEY_STATE_UP;
+        if (in->panel_top) {
+            struct ui_key key = { .code = i, .state = state };
+            in->panel_top->on_key(ctx, &key);
         }
     }
 }
@@ -101,7 +109,7 @@ bool ui_panel_common_check_pressed_keys(struct ui_context *ctx, enum ui_key_code
     struct ui_context_internal *in = ctx->priv_context;
     for (int i = 0; i < n; ++i) {
         uint32_t key_bit = 1 << keys[i];
-        if (!(in->key_bits & key_bit))
+        if (!(in->key_bits_polled & key_bit))
             return false;
     }
     return (n > 0);
@@ -187,6 +195,23 @@ static bool has_panel(struct ui_context *ctx, const struct ui_panel *panel)
     return false;
 }
 
+static void do_switch_panel(struct ui_context *ctx,
+                            const struct ui_panel *panel,
+                            void *panel_data, void *init_data)
+{
+    struct ui_context_internal *in = ctx->priv_context;
+    in->key_bits_ignore = in->key_bits_polled;
+    in->panel_top = panel;
+    if (panel_data) {
+        ctx->priv_panel = panel_data;
+    } else {
+        ctx->priv_panel = talloc_zero_size(ctx, panel->priv_size);
+        in->panel_top->init(ctx, init_data);
+    }
+    if (in->panel_top->on_show)
+        in->panel_top->on_show(ctx);
+}
+
 static void do_push_panel(struct ui_context *ctx, const struct ui_panel *panel, void *data)
 {
     // ignore duplicated panel
@@ -205,12 +230,7 @@ static void do_push_panel(struct ui_context *ctx, const struct ui_panel *panel, 
             in->panel_top->on_hide(ctx);
     }
 
-    // show new panel
-    in->panel_top = panel;
-    ctx->priv_panel = talloc_zero_size(ctx, panel->priv_size);
-    in->panel_top->init(ctx, data);
-    if (in->panel_top->on_show)
-        in->panel_top->on_show(ctx);
+    do_switch_panel(ctx, panel, NULL, data);
 }
 
 static void do_pop_panel(struct ui_context *ctx)
@@ -226,12 +246,8 @@ static void do_pop_panel(struct ui_context *ctx)
 
     struct ui_panel_item item;
     bool has_panel = MP_TARRAY_POP(in->panel_stack, in->panel_count, &item);
-    if (has_panel) {
-        ctx->priv_panel = item.data;
-        in->panel_top = item.panel;
-        if (in->panel_top->on_show)
-            in->panel_top->on_show(ctx);
-    }
+    if (has_panel)
+        do_switch_panel(ctx, item.panel, item.data, NULL);
 }
 
 static void handle_redraw(struct ui_context *ctx)
