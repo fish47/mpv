@@ -222,11 +222,11 @@ static void player_on_key(struct ui_context *ctx, struct ui_key *key)
         break;
     case KEY_ACT_SEND_QUIT:
         if (key->state == UI_KEY_STATE_DOWN)
-            mpv_command(priv->mpv_handle, (const char*[]) { "quit", NULL });
+            mpv_command_async(priv->mpv_handle, 0, (const char*[]) { "quit", NULL });
         break;
     case KEY_ACT_SEND_TOGGLE:
         if (key->state == UI_KEY_STATE_DOWN)
-            mpv_command(priv->mpv_handle, (const char*[]) { "cycle", "pause", NULL });
+            mpv_command_async(priv->mpv_handle, 0, (const char*[]) { "cycle", "pause", NULL });
         break;
     }
 }
