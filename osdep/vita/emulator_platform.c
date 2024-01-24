@@ -55,13 +55,40 @@ struct cmd_option {
 
 struct priv_platform {
     struct emulator_platform_data platform_data;
-    const key_map_item_ext *key_map_ext;
     const char *files_dir;
+
+    const key_map_item_ext *key_map_ext;
+    uint32_t key_pressed_bits;
 };
 
 static struct priv_platform *get_priv_platform(struct ui_context *ctx)
 {
     return (struct priv_platform*) ctx->priv_platform;
+}
+
+static void resolve_changed_key(uint32_t *bits, int key, int act,
+                                const struct key_map_item *map, int n)
+{
+    for (int i = 0; i < n; ++i) {
+        const struct key_map_item *item = &map[i];
+        if (item->glfw_key_code == key) {
+            if (act == GLFW_PRESS)
+                *bits |= item->ui_key_code;
+            else if (act == GLFW_RELEASE)
+                *bits &= ~item->ui_key_code;
+            break;
+        }
+    }
+}
+
+static void on_key_changed(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    struct ui_context *ctx = glfwGetWindowUserPointer(window);
+    struct priv_platform *priv = get_priv_platform(ctx);
+    resolve_changed_key(&priv->key_pressed_bits, key, action,
+                        platform_key_map, MP_ARRAY_SIZE(platform_key_map));
+    resolve_changed_key(&priv->key_pressed_bits, key, action,
+                        *priv->key_map_ext, MP_ARRAY_SIZE(*priv->key_map_ext));
 }
 
 static void get_glfw_centered_window_pos(GLFWwindow *win, int *out_x, int *out_y)
@@ -230,6 +257,7 @@ static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
     glfwShowWindow(window);
     glfwMakeContextCurrent(window);
     glfwSetWindowUserPointer(window, ctx);
+    glfwSetKeyCallback(window, on_key_changed);
     glfwSetWindowCloseCallback(window, on_window_close);
     glfwSwapInterval(0);
 
@@ -256,19 +284,14 @@ static void do_poll_keys(GLFWwindow *win, uint32_t *bits,
     for (int i = 0; i < count; ++i) {
         int state = glfwGetKey(win, map[i].glfw_key_code);
         if (state == GLFW_PRESS)
-            *bits |= (1 << map[i].ui_key_code);
+            *bits |= map[i].ui_key_code;
     }
 }
 
 static uint32_t platform_poll_keys(struct ui_context *ctx)
 {
-    uint32_t bits = 0;
     struct priv_platform *priv = get_priv_platform(ctx);
-    do_poll_keys(priv->platform_data.window, &bits,
-                 platform_key_map, MP_ARRAY_SIZE(platform_key_map));
-    do_poll_keys(priv->platform_data.window, &bits,
-                 *priv->key_map_ext, MP_ARRAY_SIZE(*priv->key_map_ext));
-    return bits;
+    return priv->key_pressed_bits;
 }
 
 static const char *platform_get_files_dir(struct ui_context *ctx)

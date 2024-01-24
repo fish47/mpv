@@ -187,9 +187,6 @@ static int resolve_mp_key_code(enum ui_key_code key, enum key_act *out_act)
     case UI_KEY_CODE_VITA_VIRTUAL_CANCEL:
         *out_act = KEY_ACT_SEND_QUIT;
         return 0;
-
-    case UI_KEY_CODE_VITA_END:
-        break;
     }
 
     *out_act = KEY_ACT_DROP;

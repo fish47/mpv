@@ -2,6 +2,7 @@
 #include "ui_driver.h"
 #include "ui_context.h"
 
+#include <strings.h>
 #include <psp2/ctrl.h>
 #include <psp2/power.h>
 #include <psp2/apputil.h>
@@ -15,6 +16,8 @@ unsigned int _pthread_stack_default_user = 1 * 1024 * 1024;
 
 struct priv_platform {
     bool use_circle_enter;
+    uint32_t keys_cache_raw;
+    uint32_t keys_cache_converted;
 };
 
 static struct priv_platform *get_priv_platform(struct ui_context *ctx)
@@ -46,32 +49,67 @@ static void platform_exit(void)
     sceKernelExitProcess(0);
 }
 
+static uint32_t do_resolve_ui_key_code(uint32_t bit)
+{
+    switch (bit) {
+    case SCE_CTRL_LEFT:
+        return UI_KEY_CODE_VITA_DPAD_LEFT;
+    case SCE_CTRL_RIGHT:
+        return UI_KEY_CODE_VITA_DPAD_RIGHT;
+    case SCE_CTRL_UP:
+        return UI_KEY_CODE_VITA_DPAD_UP;
+    case SCE_CTRL_DOWN:
+        return UI_KEY_CODE_VITA_DPAD_DOWN;
+    case SCE_CTRL_SQUARE:
+        return UI_KEY_CODE_VITA_ACTION_SQUARE;
+    case SCE_CTRL_CIRCLE:
+        return UI_KEY_CODE_VITA_ACTION_CIRCLE;
+    case SCE_CTRL_TRIANGLE:
+        return UI_KEY_CODE_VITA_ACTION_TRIANGLE;
+    case SCE_CTRL_CROSS:
+        return UI_KEY_CODE_VITA_ACTION_CROSS;
+    case SCE_CTRL_LTRIGGER:
+        return UI_KEY_CODE_VITA_TRIGGER_L;
+    case SCE_CTRL_RTRIGGER:
+        return UI_KEY_CODE_VITA_TRIGGER_R;
+    case SCE_CTRL_START:
+        return UI_KEY_CODE_VITA_START;
+    case SCE_CTRL_SELECT:
+        return UI_KEY_CODE_VITA_SELECT;
+    }
+    return 0;
+}
+
 static uint32_t platform_poll_keys(struct ui_context *ctx)
 {
+    SceCtrlData ctrl = {0};
+    sceCtrlPeekBufferPositive(0, &ctrl, 1);
+
+    // keys are not likely to change frequently
     struct priv_platform *priv = get_priv_platform(ctx);
+    if (priv->keys_cache_raw == ctrl.buttons)
+        return priv->keys_cache_converted;
+
     uint32_t enter_bit = SCE_CTRL_CIRCLE;
     uint32_t cancel_bit = SCE_CTRL_CROSS;
     if (!priv->use_circle_enter)
         MPSWAP(uint32_t, enter_bit, cancel_bit);
 
-    SceCtrlData ctrl = {0};
-    sceCtrlPeekBufferPositive(0, &ctrl, 1);
-
     uint32_t keys = 0;
-    keys |= (ctrl.buttons & SCE_CTRL_LEFT) ? (1 << UI_KEY_CODE_VITA_DPAD_LEFT) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_RIGHT) ? (1 << UI_KEY_CODE_VITA_DPAD_RIGHT) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_UP) ? (1 << UI_KEY_CODE_VITA_DPAD_UP) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_DOWN) ? (1 << UI_KEY_CODE_VITA_DPAD_DOWN) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_SQUARE) ? (1 << UI_KEY_CODE_VITA_ACTION_SQUARE) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_CIRCLE) ? (1 << UI_KEY_CODE_VITA_ACTION_CIRCLE) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_TRIANGLE) ? (1 << UI_KEY_CODE_VITA_ACTION_TRIANGLE) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_CROSS) ? (1 << UI_KEY_CODE_VITA_ACTION_CROSS) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_LTRIGGER) ? (1 << UI_KEY_CODE_VITA_TRIGGER_L) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_RTRIGGER) ? (1 << UI_KEY_CODE_VITA_TRIGGER_R) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_START) ? (1 << UI_KEY_CODE_VITA_START) : 0;
-    keys |= (ctrl.buttons & SCE_CTRL_SELECT) ? (1 << UI_KEY_CODE_VITA_SELECT) : 0;
-    keys |= (ctrl.buttons & enter_bit) ? (1 << UI_KEY_CODE_VITA_VIRTUAL_OK) : 0;
-    keys |= (ctrl.buttons & cancel_bit) ? (1 << UI_KEY_CODE_VITA_VIRTUAL_CANCEL) : 0;
+    if (ctrl.buttons & enter_bit)
+        keys |= UI_KEY_CODE_VITA_VIRTUAL_OK;
+    if (ctrl.buttons & cancel_bit)
+        keys |= UI_KEY_CODE_VITA_VIRTUAL_CANCEL;
+
+    uint32_t pending = ctrl.buttons;
+    while (pending) {
+        uint32_t pressed = 1 << (ffs(pending) - 1);
+        pending &= ~pressed;
+        keys |= do_resolve_ui_key_code(pressed);
+    }
+
+    priv->keys_cache_raw = ctrl.buttons;
+    priv->keys_cache_converted = keys;
     return keys;
 }
 

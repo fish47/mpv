@@ -1,3 +1,4 @@
+#include <strings.h>
 #include <pthread.h>
 
 #include "ta/ta_talloc.h"
@@ -84,10 +85,9 @@ static void handle_platform_keys(struct ui_context *ctx)
         return;
 
     in->key_bits_polled = new_bits;
-    for (int i = 0; i < UI_KEY_CODE_VITA_END; ++i) {
-        uint32_t key_bit = 1 << i;
-        if (!(changed_mask & key_bit))
-            continue;
+    while (changed_mask) {
+        uint32_t key_bit = 1 << (ffs(changed_mask) - 1);
+        changed_mask &= ~key_bit;
 
         // ignore pressed keys before current panel is shown
         bool pressed = key_bit & new_bits;
@@ -98,21 +98,16 @@ static void handle_platform_keys(struct ui_context *ctx)
 
         enum ui_key_state state = pressed ? UI_KEY_STATE_DOWN : UI_KEY_STATE_UP;
         if (in->panel_top) {
-            struct ui_key key = { .code = i, .state = state };
+            struct ui_key key = { .code = key_bit, .state = state };
             in->panel_top->on_key(ctx, &key);
         }
     }
 }
 
-bool ui_panel_common_check_pressed_keys(struct ui_context *ctx, enum ui_key_code *keys, int n)
+bool ui_panel_common_check_pressed_keys(struct ui_context *ctx, uint32_t keys)
 {
     struct ui_context_internal *in = ctx->priv_context;
-    for (int i = 0; i < n; ++i) {
-        uint32_t key_bit = 1 << keys[i];
-        if (!(in->key_bits_polled & key_bit))
-            return false;
-    }
-    return (n > 0);
+    return (in->key_bits_polled & keys);
 }
 
 static void handle_platform_events(struct ui_context *ctx)
@@ -285,8 +280,8 @@ static void main_loop(struct ui_context *ctx)
         mp_dispatch_queue_process(get_dispatch(ctx), 0);
 
         if (advnace_frame_time(ctx)) {
-            handle_platform_keys(ctx);
             handle_platform_events(ctx);
+            handle_platform_keys(ctx);
             handle_redraw(ctx);
         }
 

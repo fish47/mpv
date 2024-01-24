@@ -537,11 +537,11 @@ static void push_path(struct ui_context *ctx)
         ui_panel_common_invalidate(ctx);
     } else if (item->flags & PATH_ITEM_FLAG_TYPE_FILE) {
         struct ui_panel_player_init_params *p = talloc_ptrtype(priv, p);
-        enum ui_key_code combo[] = { UI_KEY_CODE_VITA_TRIGGER_L, UI_KEY_CODE_VITA_TRIGGER_R };
+        uint32_t combo = UI_KEY_CODE_VITA_TRIGGER_L | UI_KEY_CODE_VITA_TRIGGER_R;
         bstr file_path = bstrdup(priv, priv->work_dir);
         join_path(priv, &file_path, item);
         p->file_path = ta_steal(p, BSTR_CAST(file_path));
-        p->enable_perf = ui_panel_common_check_pressed_keys(ctx, combo, MP_ARRAY_SIZE(combo));
+        p->enable_perf = ui_panel_common_check_pressed_keys(ctx, combo);
         ui_panel_common_push(ctx, &ui_panel_player, p);
     }
 }
