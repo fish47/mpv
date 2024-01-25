@@ -7,6 +7,9 @@
 struct ui_font;
 struct ui_texture;
 struct ui_context;
+struct ui_color_vertex;
+
+typedef unsigned int ui_color;
 
 enum ui_texure_fmt {
     TEX_FMT_UNKNOWN,
@@ -19,7 +22,7 @@ struct ui_font_draw_args {
     int size;
     int x;
     int y;
-    unsigned int color;
+    ui_color color;
 };
 
 struct ui_texture_data_args {
@@ -33,12 +36,6 @@ struct ui_texture_data_args {
 struct ui_texture_draw_args {
     struct mp_rect *src;
     struct mp_rect *dst;
-};
-
-struct ui_rectangle_draw_args {
-    struct mp_rect *rects;
-    unsigned int *colors;
-    int count;
 };
 
 struct ui_platform_driver {
@@ -93,7 +90,15 @@ struct ui_render_driver {
                       struct ui_font_draw_args *args);
     void (*draw_texture)(struct ui_context *ctx, struct ui_texture *tex,
                          struct ui_texture_draw_args *args);
-    void (*draw_rectangle)(struct ui_context *ctx, struct ui_rectangle_draw_args *args);
+    bool (*draw_vertices_prepare)(struct ui_context *ctx,
+                                  struct ui_color_vertex **verts, int n);
+    void (*draw_vertices_duplicate)(struct ui_context *ctx,
+                                    struct ui_color_vertex *verts, int i);
+    void (*draw_vertices_compose)(struct ui_context *ctx,
+                                  struct ui_color_vertex *verts,
+                                  int i, float x, float y, ui_color color);
+    void (*draw_vertices_commit)(struct ui_context *ctx,
+                                 struct ui_color_vertex *verts, int n);
 };
 
 extern const struct ui_platform_driver ui_platform_driver_vita;

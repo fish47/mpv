@@ -1,6 +1,7 @@
 #include "emulator.h"
 #include "ui_device.h"
 #include "ui_driver.h"
+#include "shape_draw.h"
 #include "common/common.h"
 #include "video/img_format.h"
 
@@ -163,6 +164,13 @@ static const struct gl_tex_impl_spec tex_spec_yuv420 = {
         "}",
 };
 
+struct gl_uv_vertex {
+    float vx;
+    float vy;
+    float ux;
+    float uy;
+};
+
 struct gl_program_data {
     GLuint program;
     GLuint shader_vert;
@@ -210,7 +218,7 @@ struct draw_font_cache {
     int h;
     GLuint tex;
     int count;
-    float *buffer;
+    struct gl_uv_vertex *buffer;
     struct draw_font_cache_entry entry;
     struct draw_font_cache *next;
 };
@@ -241,6 +249,22 @@ struct ui_texture {
 struct ui_font {
     const char *font_path;
     int font_id;
+};
+
+struct ui_color_vertex {
+    float x;
+    float y;
+    ui_color color;
+};
+
+struct uv_rect_vert_build_ctx {
+    void *parent;
+    struct gl_uv_vertex **buffer;
+    struct mp_rect *verts;
+    struct mp_rect *uvs;
+    int tex_w;
+    int tex_h;
+    int rect_n;
 };
 
 static void font_cache_free_all(struct draw_font_cache **head);
@@ -723,7 +747,7 @@ static void render_texture_upload(struct ui_context *ctx, struct ui_texture *tex
     do_upload_tex_data(ctx, tex, args);
 }
 
-static void *normalize_to_vec4_color(float *base, unsigned int color)
+static void *normalize_to_vec4_color(float *base, ui_color color)
 {
     // follow the color definition of vita2d
     float a = (float) ((color >> 24) & 0xff) / 0xff;
@@ -737,36 +761,8 @@ static void *normalize_to_vec4_color(float *base, unsigned int color)
     return base;
 }
 
-static int tessellate_rects_get_count(int n)
-{
-    return MPMAX(n * 4 + (n - 1) * 2, 0);
-}
-
-static int do_tessellate_rects(void *buffer, void *data, int stride, int n,
-                               void (*cb)(void *out, void *data, int idx))
-{
-    uint8_t *p_out = (uint8_t*) buffer;
-    for (int i = 0; i < n; ++i) {
-        if (i > 0) {
-            cb(p_out + stride, data, i);
-            memcpy(p_out, p_out + stride, stride);
-            p_out += stride * 5;
-        } else {
-            cb(p_out, data, i);
-            p_out += stride * 4;
-        }
-
-        if (i + 1 < n) {
-            memcpy(p_out, p_out - stride, stride);
-            p_out += stride;
-        }
-    }
-    return tessellate_rects_get_count(n);
-}
-
-static void do_render_draw_texture_ext(struct ui_context *ctx,
-                                       struct ui_texture *tex,
-                                       float *buffer, unsigned int tint,
+static void do_render_draw_texture_ext(struct ui_context *ctx, struct ui_texture *tex,
+                                       struct gl_uv_vertex *buffer, ui_color tint,
                                        int offset_x, int offset_y, int count)
 {
     struct priv_render *priv = get_priv_render(ctx);
@@ -778,14 +774,11 @@ static void do_render_draw_texture_ext(struct ui_context *ctx,
     if (!spec)
         return;
 
-    float *verts = buffer;
-    float *uvs = buffer + 2;
-    int stride = 4 * sizeof(float);
-
+    int stride = sizeof(struct gl_uv_vertex);
     glUseProgram(program->program_data.program);
-    glVertexAttribPointer(attr_draw_tex_pos_draw.pos, 2, GL_FLOAT, GL_FALSE, stride, verts);
+    glVertexAttribPointer(attr_draw_tex_pos_draw.pos, 2, GL_FLOAT, GL_FALSE, stride, &buffer->vx);
     glEnableVertexAttribArray(attr_draw_tex_pos_draw.pos);
-    glVertexAttribPointer(attr_draw_tex_pos_tex.pos, 2, GL_FLOAT, GL_FALSE, stride, uvs);
+    glVertexAttribPointer(attr_draw_tex_pos_tex.pos, 2, GL_FLOAT, GL_FALSE, stride, &buffer->ux);
     glEnableVertexAttribArray(attr_draw_tex_pos_tex.pos);
 
     for (int i = 0; i < spec->num_planes; ++i) {
@@ -802,32 +795,53 @@ static void do_render_draw_texture_ext(struct ui_context *ctx,
     glDrawArrays(GL_TRIANGLE_STRIP, 0, count);
 }
 
-static void do_tessellate_cb_draw_texture(void *out, void *data, int idx)
+static void vp_rect_spec_fn_write_textured(void *dst, void *src, bool lr, bool tb)
 {
-    void **pack = data;
-    struct mp_rect *vert = pack[0];
-    struct mp_rect *uv = pack[1];
-    int *p_w = pack[2];
-    int *p_h = pack[3];
-    float *values = out;
-    vert += idx;
-    uv += idx;
-    for (int i = 0; i < 4; ++i) {
-        *values++ = (i & 0x02) ? vert->x1 : vert->x0;
-        *values++ = (i & 0x01) ? vert->y1 : vert->y0;
-        *values++ = (float) ((i & 0x02) ? uv->x1 : uv->x0) / *p_w;
-        *values++ = (float) ((i & 0x01) ? uv->y1 : uv->y0) / *p_h;
-    }
+    void **args = src;
+    struct mp_rect *rect = args[0];
+    struct mp_rect *uv = args[1];
+    int *tex_w = args[2];
+    int *tex_h = args[3];
+
+    struct gl_uv_vertex *result = dst;
+    result->vx = lr ? rect->x0 : rect->x1;
+    result->vy = tb ? rect->y0 : rect->y1;
+    result->ux = (float) (lr ? uv->x0 : uv->x1) / *tex_w;
+    result->uy = (float) (tb ? uv->y0 : uv->y1) / *tex_h;
 }
 
-static int do_tessellate_texture_rects(void *buffer,
-                                       struct mp_rect *verts,
-                                       struct mp_rect *uvs,
-                                       int tex_w, int tex_h, int n)
+static void do_build_uv_rect_buffer_dup(void *data)
 {
-    int stride = 4 * sizeof(float);
-    void *pack[] = { verts, uvs, &tex_w, &tex_h };
-    return do_tessellate_rects(buffer, pack, stride, n, do_tessellate_cb_draw_texture);
+    void **args = data;
+    int *draw_n = args[0];
+    struct uv_rect_vert_build_ctx *ctx = args[1];
+    int last = *draw_n - 1;
+    MP_TARRAY_APPEND(ctx->parent, *ctx->buffer, *draw_n, (*ctx->buffer)[last]);
+}
+
+static void do_build_uv_rect_buffer_write(void *data, int i, bool lr, bool tb)
+{
+    void **args = data;
+    int *draw_n = args[0];
+    struct uv_rect_vert_build_ctx *ctx = args[1];
+    struct mp_rect *rect = &ctx->verts[i];
+    struct mp_rect *uv = &ctx->uvs[i];
+    MP_TARRAY_APPEND(ctx->parent, *ctx->buffer, *draw_n, (struct gl_uv_vertex) {
+        .vx = lr ? rect->x0 : rect->x1,
+        .vy = tb ? rect->y0 : rect->y1,
+        .ux = (float) (lr ? uv->x0 : uv->x1) / ctx->tex_w,
+        .uy = (float) (tb ? uv->y0 : uv->y1) / ctx->tex_h,
+    });
+}
+
+static int build_uv_rect_buffer(struct uv_rect_vert_build_ctx ctx)
+{
+    int draw_n = 0;
+    void *args[] = { &draw_n, &ctx };
+    shape_draw_do_build_rect_verts(args, 0, ctx.rect_n,
+                                   do_build_uv_rect_buffer_dup,
+                                   do_build_uv_rect_buffer_write);
+    return draw_n;
 }
 
 static void render_draw_texture(struct ui_context *ctx,
@@ -836,8 +850,16 @@ static void render_draw_texture(struct ui_context *ctx,
 {
     struct priv_render *priv = get_priv_render(ctx);
     struct mp_rect uv_default = { .x0 = 0, .y0 = 0, .x1 = tex->w, .y1 = tex->h };
-    struct mp_rect *p_uv = args->src ? args->src : &uv_default;
-    int count = do_tessellate_texture_rects(priv->buffer, args->dst, p_uv, tex->w, tex->h, 1);
+    int count = build_uv_rect_buffer((struct uv_rect_vert_build_ctx) {
+        .parent = priv,
+        .buffer = (struct gl_uv_vertex**) &priv->buffer,
+        .verts = args->dst,
+        .uvs = (args->src ? args->src : &uv_default),
+        .tex_w = tex->w,
+        .tex_h = tex->h,
+        .rect_n = 1,
+    });
+
     if (count)
         do_render_draw_texture_ext(ctx, tex, priv->buffer, -1, 0, 0, count);
 }
@@ -904,7 +926,8 @@ static void font_cache_iterate(struct ui_context *ctx,
         if (codepoint < 0)
             break;
 
-        FT_UInt glyph_idx = FTC_CMapCache_Lookup(priv->ft_lib->cmap_cache, face_id, charmap_idx, codepoint);
+        FT_UInt glyph_idx = FTC_CMapCache_Lookup(priv->ft_lib->cmap_cache,
+                                                 face_id, charmap_idx, codepoint);
         if (glyph_idx == 0)
             continue;
 
@@ -918,7 +941,9 @@ static void font_cache_iterate(struct ui_context *ctx,
         };
         FT_Glyph glyph;
         FT_ULong flags = FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL;
-        if (FTC_ImageCache_LookupScaler(priv->ft_lib->image_cache, &scaler, flags, glyph_idx, &glyph, NULL) != 0)
+        FT_Error ret = FTC_ImageCache_LookupScaler(priv->ft_lib->image_cache,
+                                                   &scaler, flags, glyph_idx, &glyph, NULL);
+        if (ret != 0)
             continue;
         if (glyph->format != FT_GLYPH_FORMAT_BITMAP)
             continue;
@@ -1009,16 +1034,16 @@ static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
     // calculate text texture size
     int tex_w = 0;
     int tex_h = 0;
-    int glyph_count = 0;
-    void *pack_get_size[] = { &tex_w, &tex_h, &glyph_count };
+    int glyph_n = 0;
+    void *pack_get_size[] = { &tex_w, &tex_h, &glyph_n };
     font_cache_iterate(ctx, font, args, font_cache_cb_get_size, pack_get_size);
     if (!tex_w || !tex_h)
         return NULL;
 
     // calculate glyph draw position and update texture
     GLuint tex_id = create_texture(tex_w, tex_h, GL_ALPHA, GL_UNSIGNED_BYTE);
-    struct mp_rect *vert_rects = ta_new_array(NULL, struct mp_rect, glyph_count);
-    struct mp_rect *uv_rects = ta_new_array(NULL, struct mp_rect, glyph_count);
+    struct mp_rect *vert_rects = ta_new_array(NULL, struct mp_rect, glyph_n);
+    struct mp_rect *uv_rects = ta_new_array(NULL, struct mp_rect, glyph_n);
     struct ui_texture tex = {
         .fmt = TEX_FMT_INTERNAL_A8,
         .w = tex_w,
@@ -1035,10 +1060,17 @@ static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
     font_cache_iterate(ctx, font, args, font_cache_cb_build_text, pack_build_text);
 
     // calculate vertices and texture coordinates
-    int stride = 4 * sizeof(float);
-    int draw_count = tessellate_rects_get_count(glyph_count);
-    float *buffer = ta_alloc_size(NULL, draw_count * stride);
-    do_tessellate_texture_rects(buffer, vert_rects, uv_rects, tex_w, tex_h, glyph_count);
+    struct gl_uv_vertex *buffer = NULL;
+    int draw_n = build_uv_rect_buffer((struct uv_rect_vert_build_ctx) {
+        .parent = NULL,
+        .buffer = &buffer,
+        .verts = vert_rects,
+        .uvs = uv_rects,
+        .tex_w = tex_w,
+        .tex_h = tex_h,
+        .rect_n = glyph_n,
+    });
+    buffer = ta_realloc_size(NULL, buffer, draw_n * sizeof(struct gl_uv_vertex));
     TA_FREEP(&vert_rects);
     TA_FREEP(&uv_rects);
 
@@ -1049,7 +1081,7 @@ static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
         .h = tex_h,
         .tex = tex_id,
         .buffer = ta_steal(cache3, buffer),
-        .count = draw_count,
+        .count = draw_n,
         .entry = {
             .font_id = font->font_id,
             .font_size = args->size,
@@ -1107,49 +1139,54 @@ static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
         .h = cache->h,
         .ids = { cache->tex },
     };
-    do_render_draw_texture_ext(ctx, &tex, cache->buffer, args->color, args->x, args->y, cache->count);
+    do_render_draw_texture_ext(ctx, &tex, cache->buffer,
+                               args->color, args->x, args->y, cache->count);
 }
 
-static void do_tessellate_cb_draw_rect(void *out, void *data, int idx)
-{
-    struct ui_rectangle_draw_args *args = data;
-    struct mp_rect *rect = &args->rects[idx];
-
-    float color_vec4[4];
-    normalize_to_vec4_color(color_vec4, args->colors[idx]);
-
-    float *values = out;
-    for (int i = 0; i < 4; ++i) {
-        *values++ = (i & 0x02) ? rect->x1 : rect->x0;
-        *values++ = (i & 0x01) ? rect->y1 : rect->y0;
-        memcpy(values, color_vec4, sizeof(float) * 4);
-        values += 4;
-    }
-}
-
-static void render_draw_rectangle(struct ui_context *ctx,
-                                  struct ui_rectangle_draw_args *args)
+static bool render_draw_vertices_prepare(struct ui_context *ctx,
+                                         struct ui_color_vertex **verts, int n)
 {
     struct priv_render *priv = get_priv_render(ctx);
+    int req_size = sizeof(struct ui_color_vertex) * n;
+    if (req_size > ta_get_size(priv->buffer))
+        return false;
 
-    int n_pos = 2;
-    int n_color = 4;
-    int stride = (n_pos + n_color) * sizeof(float);
-    float *p_base = (float*) priv->buffer;
-    float *p_pos = p_base;
-    float *p_color = p_base + n_pos;
-    int count = do_tessellate_rects(p_base, args, stride, args->count, do_tessellate_cb_draw_rect);
-    if (!count)
-        return;
+    *verts = priv->buffer;
+    return true;
+}
 
+static void render_draw_vertices_compose(struct ui_context *ctx,
+                                         struct ui_color_vertex *verts,
+                                         int i, float x, float y, ui_color color)
+{
+    verts[i] = (struct ui_color_vertex) {
+        .x = x,
+        .y = y,
+        .color = color,
+    };
+}
+
+static void render_draw_vertices_duplicate(struct ui_context *ctx,
+                                           struct ui_color_vertex *verts, int i)
+{
+    memcpy(&verts[i], &verts[i - 1], sizeof(struct ui_color_vertex));
+}
+
+static void render_draw_vertices_commit(struct ui_context *ctx,
+                                        struct ui_color_vertex *verts, int n)
+{
+    int stride = sizeof(struct ui_color_vertex);
+    struct priv_render *priv = get_priv_render(ctx);
     struct gl_program_draw_triangle *program = &priv->program_draw_triangle;
     glUseProgram(program->program_data.program);
-    glVertexAttribPointer(attr_draw_triangle_pos.pos, n_pos, GL_FLOAT, GL_FALSE, stride, p_pos);
+    glVertexAttribPointer(attr_draw_triangle_pos.pos, 2,
+                          GL_FLOAT, GL_FALSE, stride, &verts->x);
     glEnableVertexAttribArray(attr_draw_triangle_pos.pos);
-    glVertexAttribPointer(attr_draw_triangle_color.pos, n_color, GL_FLOAT, GL_FALSE, stride, p_color);
+    glVertexAttribPointer(attr_draw_triangle_color.pos, 4,
+                          GL_UNSIGNED_BYTE, GL_TRUE, stride, &verts->color);
     glEnableVertexAttribArray(attr_draw_triangle_color.pos);
     glUniformMatrix4fv(program->uniform_transform, 1, GL_FALSE, priv->normalize_matrix);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, count);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, n);
 }
 
 const struct ui_render_driver ui_render_driver_vita = {
@@ -1182,5 +1219,8 @@ const struct ui_render_driver ui_render_driver_vita = {
 
     .draw_font = render_draw_font,
     .draw_texture = render_draw_texture,
-    .draw_rectangle = render_draw_rectangle,
+    .draw_vertices_prepare = render_draw_vertices_prepare,
+    .draw_vertices_compose = render_draw_vertices_compose,
+    .draw_vertices_duplicate = render_draw_vertices_duplicate,
+    .draw_vertices_commit = render_draw_vertices_commit,
 };

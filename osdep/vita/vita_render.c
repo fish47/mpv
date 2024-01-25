@@ -16,6 +16,10 @@
 #define VRAM_MEM_BLOCK_ALIGN        (256*1024)
 #define VRAM_MEM_BLOCK_NONE_ID      (-1)
 
+struct ui_color_vertex {
+    vita2d_color_vertex impl;
+};
+
 struct texture_fmt_spec {
     enum ui_texure_fmt tex_fmt;
     SceGxmTextureFormat sce_fmt;
@@ -464,42 +468,40 @@ static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
     get_priv_render(ctx)->font_impl->draw(font, args);
 }
 
-static vita2d_color_vertex* pool_alloc_color_vertex(int count)
+static bool render_draw_vertices_prepare(struct ui_context *ctx,
+                                         struct ui_color_vertex **verts, int n)
 {
-    size_t vert_size = sizeof(vita2d_color_vertex);
-    void *mem = vita2d_pool_memalign(count * vert_size, vert_size);
-    return (vita2d_color_vertex*) mem;
+    size_t elem_size = sizeof(struct ui_color_vertex);
+    struct ui_color_vertex *base = vita2d_pool_memalign(elem_size * n, elem_size);
+    if (!base)
+        return false;
+
+    *verts = base;
+    return true;
 }
 
-static void render_draw_rectangle(struct ui_context *ctx,
-                                  struct ui_rectangle_draw_args *args)
+static void render_draw_vertices_duplicate(struct ui_context *ctx,
+                                           struct ui_color_vertex *verts, int i)
 {
-    int count = args->count * 4 + (args->count - 1) * 2;
-    vita2d_color_vertex *base = pool_alloc_color_vertex(count);
-    if (!base)
-        return;
+    memcpy(&verts[i], &verts[i - 1], sizeof(struct ui_color_vertex));
+}
 
-    vita2d_color_vertex *p = base;
-    for (int i = 0; i < args->count; ++i) {
-        int c = args->colors[i];
-        struct mp_rect *r = &args->rects[i];
+static void render_draw_vertices_compose(struct ui_context *ctx,
+                                         struct ui_color_vertex *verts,
+                                         int i, float x, float y, ui_color color)
+{
+    verts[i].impl = (vita2d_color_vertex) {
+        .x = x,
+        .y = y,
+        .z = 0.5,
+        .color = color,
+    };
+}
 
-        *p++ = (vita2d_color_vertex) { .x = r->x0, .y = r->y0, .z = 0.5, .color = c };
-        if (i > 0) {
-            vita2d_color_vertex *first = p - 1;
-            *p++ = *first;
-        }
-
-        *p++ = (vita2d_color_vertex) { .x = r->x1, .y = r->y0, .z = 0.5, .color = c };
-        *p++ = (vita2d_color_vertex) { .x = r->x0, .y = r->y1, .z = 0.5, .color = c };
-        *p++ = (vita2d_color_vertex) { .x = r->x1, .y = r->y1, .z = 0.5, .color = c };
-
-        if (i + 1 < args->count) {
-            vita2d_color_vertex *last = p - 1;
-            *p++ = *last;
-        }
-    }
-    vita2d_draw_array(SCE_GXM_PRIMITIVE_TRIANGLE_STRIP, base, count);
+static void render_draw_vertices_commit(struct ui_context *ctx,
+                                        struct ui_color_vertex *verts, int n)
+{
+    vita2d_draw_array(SCE_GXM_PRIMITIVE_TRIANGLE_STRIP, &verts->impl, n);
 }
 
 static const struct font_impl font_impl_pgf = {
@@ -544,5 +546,8 @@ const struct ui_render_driver ui_render_driver_vita = {
 
     .draw_font = render_draw_font,
     .draw_texture = render_draw_texture,
-    .draw_rectangle = render_draw_rectangle,
+    .draw_vertices_prepare = render_draw_vertices_prepare,
+    .draw_vertices_duplicate = render_draw_vertices_duplicate,
+    .draw_vertices_compose = render_draw_vertices_compose,
+    .draw_vertices_commit = render_draw_vertices_commit,
 };

@@ -2,6 +2,7 @@
 #include "ui_device.h"
 #include "ui_driver.h"
 #include "ui_panel.h"
+#include "shape_draw.h"
 #include "misc/bstr.h"
 #include "ta/ta_talloc.h"
 
@@ -149,11 +150,6 @@ enum path_item_flag {
     PATH_ITEM_FLAG_TYPE_FILE = 1 << 2,
 };
 
-enum draw_flag {
-    DRAW_FLAG_CLIP_NAME = 1,
-    DRAW_FLAG_ONLY_CURSOR = 1 << 1,
-};
-
 struct path_item {
     int flags;
     const char *str_name;
@@ -167,8 +163,8 @@ struct path_item {
 struct cache_data {
     struct path_item *path_items;
     int path_item_count;
-    char *tmp_str_buf;
     char *path_str_pool;
+    void *tmp_buffer;
 };
 
 struct cursor_data {
@@ -225,13 +221,15 @@ static bool sanitize_path_name(const char *name, char *out)
     return changed;
 }
 
-static const char *format_name_text(void *p, char **buf, struct path_item *item)
+static const char *format_name_text(struct priv_panel *priv, struct path_item *item)
 {
     // it is uncommon to have special characters
     if (item->flags & PATH_ITEM_FLAG_SANTIZIE_NAME) {
-        MP_TARRAY_GROW(p, *buf, (item->name_len + 1));
-        sanitize_path_name(item->str_name, *buf);
-        return *buf;
+        char *buf = priv->cache_data.tmp_buffer;
+        MP_TARRAY_GROW(priv, buf, (item->name_len + 1));
+        sanitize_path_name(item->str_name, buf);
+        priv->cache_data.tmp_buffer = buf;
+        return buf;
     }
 
     return item->str_name;
@@ -590,7 +588,7 @@ static void files_on_hide(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
-    TA_FREEP(&cache->tmp_str_buf);
+    TA_FREEP(&cache->tmp_buffer);
     TA_FREEP(&cache->path_str_pool);
     TA_FREEP(&cache->path_items);
     cache->path_item_count = 0;
@@ -635,57 +633,9 @@ static void do_draw_titles(struct ui_context *ctx)
     }
 }
 
-static void do_draw_blocks(struct ui_context *ctx)
-{
-    int count = 0;
-    unsigned int colors[3];
-    struct mp_rect rects[3];
-
-    colors[count] = UI_COLOR_BLOCK;
-    rects[count] = (struct mp_rect) {
-        .x0 = LAYOUT_FRAME_ITEMS_L,
-        .y0 = LAYOUT_FRAME_TITLE_T,
-        .x1 = LAYOUT_FRAME_ITEMS_R,
-        .y1 = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_ROW_H,
-    };
-    ++count;
-
-    if (has_scroll_bar(ctx)) {
-        struct priv_panel *priv = ctx->priv_panel;
-        struct cache_data *cache = &priv->cache_data;
-        int n = cache->path_item_count;
-        int height = LAYOUT_FRAME_SCROLL_BAR_H * LAYOUT_COMMON_ITEM_COUNT / n;
-        int offset = LAYOUT_FRAME_SCROLL_BAR_H * priv->cursor_pos.top / n;
-        offset = MPMIN(offset, LAYOUT_FRAME_SCROLL_BAR_H - height);
-
-        colors[count] = UI_COLOR_BLOCK;
-        rects[count] = (struct mp_rect) {
-            .x0 = LAYOUT_FRAME_SCROLL_BAR_L,
-            .y0 = LAYOUT_FRAME_SCROLL_BAR_T,
-            .x1 = LAYOUT_FRAME_SCROLL_BAR_R,
-            .y1 = LAYOUT_FRAME_SCROLL_BAR_B,
-        };
-        ++count;
-
-        colors[count] = UI_COLOR_MOVABLE;
-        rects[count] = (struct mp_rect) {
-            .x0 = LAYOUT_FRAME_SCROLL_BAR_L,
-            .y0 = LAYOUT_FRAME_SCROLL_BAR_T + offset,
-            .x1 = LAYOUT_FRAME_SCROLL_BAR_R,
-            .y1 = LAYOUT_FRAME_SCROLL_BAR_T + offset + height,
-        };
-        ++count;
-    }
-
-    struct ui_rectangle_draw_args args = {
-        .rects = rects,
-        .colors = colors,
-        .count = count,
-    };
-    ui_render_driver_vita.draw_rectangle(ctx, &args);
-}
-
-static void do_draw_content(struct ui_context *ctx, int flags, int fields)
+static void do_draw_content(struct ui_context *ctx,
+                            struct shape_draw_item *shape_item,
+                            int *shape_count, int fields)
 {
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
@@ -698,7 +648,7 @@ static void do_draw_content(struct ui_context *ctx, int flags, int fields)
     args.color = UI_COLOR_TEXT;
 
     int draw_top = LAYOUT_FRAME_ITEMS_T;
-    bool clip_name = (flags & DRAW_FLAG_CLIP_NAME);
+    bool clip_name = (fields & PATH_ITEM_FIELD_NAME);
     if (clip_name) {
         struct mp_rect rect = {
             .x0 = LAYOUT_ITEM_NAME_CLIP_L,
@@ -715,24 +665,22 @@ static void do_draw_content(struct ui_context *ctx, int flags, int fields)
             break;
 
         // cursor
-        if ((flags & DRAW_FLAG_ONLY_CURSOR) && priv->cursor_pos.current == idx) {
-            unsigned int cursor_color = UI_COLOR_MOVABLE;
-            struct mp_rect cursor_rect = {
-                .x0 = LAYOUT_CURSOR_L,
-                .y0 = draw_top,
-                .x1 = LAYOUT_CURSOR_R,
-                .y1 = draw_top + LAYOUT_CURSOR_H,
-            };
-            struct ui_rectangle_draw_args rect_args = {
-                .rects = &cursor_rect,
-                .colors = &cursor_color,
-                .count = 1,
-            };
-
+        if (shape_item && priv->cursor_pos.current == idx) {
+            int cursor_right = LAYOUT_CURSOR_R;
             if (has_scroll_bar(ctx))
-                cursor_rect.x1 -= LAYOUT_FRAME_SCROLL_BAR_W + LAYOUT_FRAME_SCROLL_BAR_MARGIN_L;
+                cursor_right -= LAYOUT_FRAME_SCROLL_BAR_W + LAYOUT_FRAME_SCROLL_BAR_MARGIN_L;
 
-            ui_render_driver_vita.draw_rectangle(ctx, &rect_args);
+            ++(*shape_count);
+            (*shape_item) = (struct shape_draw_item) {
+                .type = SHAPE_DRAW_TYPE_RECT,
+                .color = UI_COLOR_MOVABLE,
+                .shape.rect = (struct shape_draw_rect) {
+                    .x0 = LAYOUT_CURSOR_L,
+                    .y0 = draw_top,
+                    .x1 = cursor_right,
+                    .y1 = draw_top + LAYOUT_CURSOR_H,
+                }
+            };
             break;
         }
 
@@ -741,7 +689,7 @@ static void do_draw_content(struct ui_context *ctx, int flags, int fields)
 
         if (fields & PATH_ITEM_FIELD_NAME) {
             args.x = LAYOUT_ITEM_NAME_L;
-            args.text = format_name_text(priv, &cache->tmp_str_buf, item);
+            args.text = format_name_text(priv, item);
             ui_render_driver_vita.draw_font(ctx, font, &args);
         }
 
@@ -764,13 +712,66 @@ static void do_draw_content(struct ui_context *ctx, int flags, int fields)
         ui_render_driver_vita.clip_end(ctx);
 }
 
+
+static void do_draw_shapes(struct ui_context *ctx)
+{
+    struct priv_panel *priv = ctx->priv_panel;
+    struct shape_draw_item shapes[4];
+    int count = 0;
+
+    shapes[count++] = (struct shape_draw_item) {
+        .type = SHAPE_DRAW_TYPE_RECT,
+        .color = UI_COLOR_BLOCK,
+        .shape.rect = (struct shape_draw_rect) {
+            .x0 = LAYOUT_FRAME_ITEMS_L,
+            .y0 = LAYOUT_FRAME_TITLE_T,
+            .x1 = LAYOUT_FRAME_ITEMS_R,
+            .y1 = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_ROW_H,
+        }
+    };
+
+    if (has_scroll_bar(ctx)) {
+        struct cache_data *cache = &priv->cache_data;
+        int n = cache->path_item_count;
+        int height = LAYOUT_FRAME_SCROLL_BAR_H * LAYOUT_COMMON_ITEM_COUNT / n;
+        int offset = LAYOUT_FRAME_SCROLL_BAR_H * priv->cursor_pos.top / n;
+        offset = MPMIN(offset, LAYOUT_FRAME_SCROLL_BAR_H - height);
+
+        shapes[count++] = (struct shape_draw_item) {
+            .type = SHAPE_DRAW_TYPE_RECT,
+            .color = UI_COLOR_BLOCK,
+            .shape.rect = (struct shape_draw_rect) {
+                .x0 = LAYOUT_FRAME_SCROLL_BAR_L,
+                .y0 = LAYOUT_FRAME_SCROLL_BAR_T,
+                .x1 = LAYOUT_FRAME_SCROLL_BAR_R,
+                .y1 = LAYOUT_FRAME_SCROLL_BAR_B,
+            }
+        };
+
+        shapes[count++] = (struct shape_draw_item) {
+            .type = SHAPE_DRAW_TYPE_RECT,
+            .color = UI_COLOR_MOVABLE,
+            .shape.rect = (struct shape_draw_rect) {
+                .x0 = LAYOUT_FRAME_SCROLL_BAR_L,
+                .y0 = LAYOUT_FRAME_SCROLL_BAR_T + offset,
+                .x1 = LAYOUT_FRAME_SCROLL_BAR_R,
+                .y1 = LAYOUT_FRAME_SCROLL_BAR_T + offset + height,
+            }
+        };
+    }
+
+    do_draw_content(ctx, &shapes[count], &count, 0);
+
+    shape_draw_commit(ctx, shapes, count);
+}
+
+
 static void files_on_draw(struct ui_context *ctx)
 {
-    do_draw_blocks(ctx);
+    do_draw_shapes(ctx);
     do_draw_titles(ctx);
-    do_draw_content(ctx, DRAW_FLAG_ONLY_CURSOR, 0);
-    do_draw_content(ctx, DRAW_FLAG_CLIP_NAME, PATH_ITEM_FIELD_NAME);
-    do_draw_content(ctx, 0, PATH_ITEM_FIELD_DATE | PATH_ITEM_FIELD_SIZE);
+    do_draw_content(ctx, NULL, NULL, PATH_ITEM_FIELD_NAME);
+    do_draw_content(ctx, NULL, NULL, PATH_ITEM_FIELD_DATE | PATH_ITEM_FIELD_SIZE);
 }
 
 static void do_move_cursor(struct ui_context *ctx,
