@@ -1,5 +1,6 @@
 #include "ui_context.h"
 #include "ui_panel.h"
+#include "player_osc.h"
 #include "player_perf.h"
 
 #include "ta/ta.h"
@@ -20,6 +21,7 @@ enum key_act {
 struct priv_panel {
     mpv_handle *mpv_handle;
     struct MPContext *mpv_ctx;
+    struct player_osc_ctx *osc_ctx;
     struct player_perf_ctx *perf_ctx;
 
     void *vo_data;
@@ -79,6 +81,8 @@ static bool player_init(struct ui_context *ctx, void *p)
             "loadfile", params->file_path, NULL
         });
     }
+
+    priv->osc_ctx = player_osc_create_ctx(priv, priv->mpv_handle);
     return true;
 }
 
@@ -96,6 +100,7 @@ static void player_on_draw(struct ui_context *ctx)
         priv->vo_draw_fn(ctx, priv->vo_data);
     if (priv->perf_ctx)
         player_perf_draw(priv->perf_ctx, ctx);
+    player_osc_on_draw(priv->osc_ctx, ctx);
 }
 
 static void *do_destroy_mpv(void *args)
@@ -138,6 +143,7 @@ static void player_on_poll(struct ui_context *ctx)
     if (!priv->mpv_handle)
         return;
 
+    player_osc_on_poll(priv->osc_ctx, ctx);
     if (priv->perf_ctx)
         player_perf_poll(priv->perf_ctx, ctx, priv->mpv_ctx);
 
@@ -148,6 +154,8 @@ static void player_on_poll(struct ui_context *ctx)
         } else if (event->event_id == MPV_EVENT_SHUTDOWN) {
             wait_mpv_destruction_async(ctx);
             break;
+        } else {
+            player_osc_on_event(priv->osc_ctx, ctx, event);
         }
     }
 }

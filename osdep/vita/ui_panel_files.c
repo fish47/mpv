@@ -672,7 +672,7 @@ static void do_draw_content(struct ui_context *ctx,
 
             ++(*shape_count);
             (*shape_item) = (struct shape_draw_item) {
-                .type = SHAPE_DRAW_TYPE_RECT,
+                .type = SHAPE_DRAW_TYPE_RECT_FILL,
                 .color = UI_COLOR_MOVABLE,
                 .shape.rect = (struct shape_draw_rect) {
                     .x0 = LAYOUT_CURSOR_L,
@@ -720,7 +720,7 @@ static void do_draw_shapes(struct ui_context *ctx)
     int count = 0;
 
     shapes[count++] = (struct shape_draw_item) {
-        .type = SHAPE_DRAW_TYPE_RECT,
+        .type = SHAPE_DRAW_TYPE_RECT_FILL,
         .color = UI_COLOR_BLOCK,
         .shape.rect = (struct shape_draw_rect) {
             .x0 = LAYOUT_FRAME_ITEMS_L,
@@ -738,7 +738,7 @@ static void do_draw_shapes(struct ui_context *ctx)
         offset = MPMIN(offset, LAYOUT_FRAME_SCROLL_BAR_H - height);
 
         shapes[count++] = (struct shape_draw_item) {
-            .type = SHAPE_DRAW_TYPE_RECT,
+            .type = SHAPE_DRAW_TYPE_RECT_FILL,
             .color = UI_COLOR_BLOCK,
             .shape.rect = (struct shape_draw_rect) {
                 .x0 = LAYOUT_FRAME_SCROLL_BAR_L,
@@ -749,7 +749,7 @@ static void do_draw_shapes(struct ui_context *ctx)
         };
 
         shapes[count++] = (struct shape_draw_item) {
-            .type = SHAPE_DRAW_TYPE_RECT,
+            .type = SHAPE_DRAW_TYPE_RECT_FILL,
             .color = UI_COLOR_MOVABLE,
             .shape.rect = (struct shape_draw_rect) {
                 .x0 = LAYOUT_FRAME_SCROLL_BAR_L,

@@ -15,12 +15,14 @@ struct shape_draw_rect {
 };
 
 enum shape_draw_type {
-    SHAPE_DRAW_TYPE_RECT,
+    SHAPE_DRAW_TYPE_RECT_LINE,
+    SHAPE_DRAW_TYPE_RECT_FILL,
 };
 
 struct shape_draw_item {
     enum shape_draw_type type;
     ui_color color;
+    float line;
     union {
         struct shape_draw_rect rect;
     } shape;

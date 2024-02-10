@@ -1166,10 +1166,11 @@ static void render_draw_vertices_compose(struct ui_context *ctx,
     };
 }
 
-static void render_draw_vertices_duplicate(struct ui_context *ctx,
-                                           struct ui_color_vertex *verts, int i)
+static void render_draw_vertices_copy(struct ui_context *ctx,
+                                      struct ui_color_vertex *verts,
+                                      int dst, int src)
 {
-    memcpy(&verts[i], &verts[i - 1], sizeof(struct ui_color_vertex));
+    memcpy(&verts[dst], &verts[src], sizeof(struct ui_color_vertex));
 }
 
 static void render_draw_vertices_commit(struct ui_context *ctx,
@@ -1221,6 +1222,6 @@ const struct ui_render_driver ui_render_driver_vita = {
     .draw_texture = render_draw_texture,
     .draw_vertices_prepare = render_draw_vertices_prepare,
     .draw_vertices_compose = render_draw_vertices_compose,
-    .draw_vertices_duplicate = render_draw_vertices_duplicate,
+    .draw_vertices_copy = render_draw_vertices_copy,
     .draw_vertices_commit = render_draw_vertices_commit,
 };

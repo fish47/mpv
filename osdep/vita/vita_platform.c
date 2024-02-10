@@ -118,6 +118,11 @@ const char* platform_get_files_dir(struct ui_context *ctx)
     return "ux0:";
 }
 
+static int platform_get_battery_level(struct ui_context *ctx)
+{
+    return scePowerGetBatteryLifePercent();
+}
+
 const struct ui_platform_driver ui_platform_driver_vita = {
     .priv_size = sizeof(struct priv_platform),
     .init = platform_init,
@@ -126,4 +131,5 @@ const struct ui_platform_driver ui_platform_driver_vita = {
     .poll_events = NULL,
     .poll_keys = platform_poll_keys,
     .get_files_dir = platform_get_files_dir,
+    .get_battery_level = platform_get_battery_level,
 };

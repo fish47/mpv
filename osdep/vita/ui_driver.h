@@ -46,6 +46,7 @@ struct ui_platform_driver {
     void (*poll_events)(struct ui_context *ctx);
     uint32_t (*poll_keys)(struct ui_context *ctx);
     const char* (*get_files_dir)(struct ui_context *ctx);
+    int (*get_battery_level)(struct ui_context *ctx);
 };
 
 struct ui_audio_driver {
@@ -92,8 +93,8 @@ struct ui_render_driver {
                          struct ui_texture_draw_args *args);
     bool (*draw_vertices_prepare)(struct ui_context *ctx,
                                   struct ui_color_vertex **verts, int n);
-    void (*draw_vertices_duplicate)(struct ui_context *ctx,
-                                    struct ui_color_vertex *verts, int i);
+    void (*draw_vertices_copy)(struct ui_context *ctx,
+                               struct ui_color_vertex *verts, int dst, int src);
     void (*draw_vertices_compose)(struct ui_context *ctx,
                                   struct ui_color_vertex *verts,
                                   int i, float x, float y, ui_color color);

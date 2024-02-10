@@ -376,6 +376,8 @@ list(APPEND mpv_src_files
     osdep/vita/ui_panel.h
     osdep/vita/ui_panel_player.c
     osdep/vita/ui_panel_files.c
+    osdep/vita/player_osc.h
+    osdep/vita/player_osc.c
     osdep/vita/player_perf.h
     osdep/vita/player_perf.c
     osdep/vita/shape_draw.h

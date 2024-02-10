@@ -46,6 +46,7 @@ struct font_impl {
     void *(*init)(union font_impl_data_pack *data);
     void (*uninit)(void *font);
     void (*draw)(void *font, struct ui_font_draw_args *args);
+    void (*measure)(void *font, const char *text, int size, int *w, int *h);
 };
 
 struct vram_entry {
@@ -111,6 +112,13 @@ static void font_impl_pgf_draw(void *font, struct ui_font_draw_args *args)
     vita2d_pgf_draw_text(pgf, args->x, args->y, args->color, scale, args->text);
 }
 
+static void font_impl_pgf_measure(void *font, const char *text, int size, int *w, int *h)
+{
+    vita2d_pgf *pgf = font;
+    float scale = MPMIN(size / 24.0, 1);
+    vita2d_pgf_text_dimensions(pgf, scale, text, w, h);
+}
+
 static void *font_impl_ft_init(union font_impl_data_pack *data)
 {
     const char *path = data->freetype.font_path;
@@ -138,6 +146,12 @@ static void font_impl_ft_draw(void *font, struct ui_font_draw_args *args)
 {
     vita2d_font *ft = font;
     vita2d_font_draw_text(ft, args->x, args->y, args->color, args->size, args->text);
+}
+
+static void font_impl_ft_measure(void *font, const char *text, int size, int *w, int *h)
+{
+    vita2d_font *ft = font;
+    vita2d_font_text_dimensions(font, size, text, w, h);
 }
 
 static void do_dr_align_size(enum ui_texure_fmt fmt, int *w, int *h)
@@ -378,6 +392,12 @@ static void render_font_uninit(struct ui_context *ctx, struct ui_font **font)
     *font = NULL;
 }
 
+static void render_font_measure(struct ui_context *ctx, struct ui_font *font,
+                                const char* text, int size, int *w, int *h)
+{
+    get_priv_render(ctx)->font_impl->measure(font, text, size, w, h);
+}
+
 static void render_clip_start(struct ui_context *ctx, struct mp_rect *rect)
 {
     vita2d_enable_clipping();
@@ -480,10 +500,11 @@ static bool render_draw_vertices_prepare(struct ui_context *ctx,
     return true;
 }
 
-static void render_draw_vertices_duplicate(struct ui_context *ctx,
-                                           struct ui_color_vertex *verts, int i)
+static void render_draw_vertices_copy(struct ui_context *ctx,
+                                      struct ui_color_vertex *verts,
+                                      int dst, int src)
 {
-    memcpy(&verts[i], &verts[i - 1], sizeof(struct ui_color_vertex));
+    memcpy(&verts[dst], &verts[src], sizeof(struct ui_color_vertex));
 }
 
 static void render_draw_vertices_compose(struct ui_context *ctx,
@@ -508,12 +529,14 @@ static const struct font_impl font_impl_pgf = {
     .init = font_impl_pgf_init,
     .uninit = font_impl_pgf_uninit,
     .draw = font_impl_pgf_draw,
+    .measure = font_impl_pgf_measure,
 };
 
 static const struct font_impl font_impl_freetype = {
     .init = font_impl_ft_init,
     .uninit = font_impl_ft_uninit,
     .draw = font_impl_ft_draw,
+    .measure = font_impl_ft_measure,
 };
 
 const struct ui_render_driver ui_render_driver_vita = {
@@ -540,6 +563,7 @@ const struct ui_render_driver ui_render_driver_vita = {
 
     .font_init = render_font_init,
     .font_uninit = render_font_uninit,
+    .font_measure = render_font_measure,
 
     .clip_start = render_clip_start,
     .clip_end = render_clip_end,
@@ -547,7 +571,7 @@ const struct ui_render_driver ui_render_driver_vita = {
     .draw_font = render_draw_font,
     .draw_texture = render_draw_texture,
     .draw_vertices_prepare = render_draw_vertices_prepare,
-    .draw_vertices_duplicate = render_draw_vertices_duplicate,
+    .draw_vertices_copy = render_draw_vertices_copy,
     .draw_vertices_compose = render_draw_vertices_compose,
     .draw_vertices_commit = render_draw_vertices_commit,
 };
