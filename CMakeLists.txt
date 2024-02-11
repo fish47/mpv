@@ -18,6 +18,8 @@ if(NOT MPV_BUILD_EMULATOR)
     include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 endif()
 
+set(CMAKE_C_STANDARD 11)
+
 set(mpv_src_files)
 set(mpv_gen_files)
 set(mpv_gen_dir)
@@ -28,9 +30,6 @@ set(mpv_compile_flags)
 
 list(APPEND mpv_inc_dirs
     ${CMAKE_CURRENT_SOURCE_DIR})
-
-list(APPEND mpv_compile_flags
-    -std=gnu11)
 
 list(APPEND mpv_gen_dir
     ${CMAKE_CURRENT_BINARY_DIR}/generated_files)
