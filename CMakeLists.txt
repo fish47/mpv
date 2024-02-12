@@ -404,9 +404,6 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/config.h "\
 
 
 # generate file
-_generate_source(mpv_gen_files ${mpv_gen_dir}/generated/etc/input.conf.inc
-    ${CMAKE_CURRENT_SOURCE_DIR}/TOOLS/file2string.py
-    ${CMAKE_CURRENT_SOURCE_DIR}/etc/vita/input.conf)
 _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/version.h
     ${CMAKE_CURRENT_SOURCE_DIR}/version.py)
 _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/ebml_defs.inc

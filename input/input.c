@@ -228,7 +228,11 @@ const struct m_sub_options input_config = {
 };
 
 static const char builtin_input_conf[] =
+#if HAVE_VITA
+""
+#else
 #include "generated/etc/input.conf.inc"
+#endif
 ;
 
 static bool test_rect(struct mp_rect *rc, int x, int y)

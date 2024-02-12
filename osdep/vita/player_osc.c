@@ -1,9 +1,11 @@
 #include "player_osc.h"
 #include "ui_panel.h"
+#include "key_helper.h"
 #include "shape_draw.h"
 
 #include "ta/ta.h"
 #include "misc/bstr.h"
+#include "player/core.h"
 #include "libmpv/client.h"
 
 #include <time.h>
@@ -42,6 +44,19 @@
 #define LAYOUT_PROGRESS_BAR_R           (LAYOUT_PROGRESS_FRAME_R - LAYOUT_PROGRESS_BAR_MARGIN)
 #define LAYOUT_PROGRESS_BAR_T           (LAYOUT_PROGRESS_FRAME_T + LAYOUT_PROGRESS_BAR_MARGIN)
 #define LAYOUT_PROGRESS_BAR_B           (LAYOUT_PROGRESS_FRAME_B - LAYOUT_PROGRESS_BAR_MARGIN)
+
+static void on_key_seek(void *p, const void *data, int repeat);
+static void on_key_ok(void *p, const void *data, int repeat);
+static void on_key_cancel(void *p, const void *data, int repeat);
+
+static const struct key_helper_spec key_helper_spec_list[] = {
+    { .key = UI_KEY_CODE_VITA_DPAD_UP, .callback = on_key_seek, .data = (const void*) 10, .repeatable = true },
+    { .key = UI_KEY_CODE_VITA_DPAD_DOWN, .callback = on_key_seek, .data = (const void*) -10, .repeatable = true },
+    { .key = UI_KEY_CODE_VITA_DPAD_LEFT, .callback = on_key_seek, .data = (const void*) -5, .repeatable = true },
+    { .key = UI_KEY_CODE_VITA_DPAD_RIGHT, .callback = on_key_seek, .data = (const void*) 5, .repeatable = true },
+    { .key = UI_KEY_CODE_VITA_VIRTUAL_OK, .callback = on_key_ok },
+    { .key = UI_KEY_CODE_VITA_VIRTUAL_CANCEL, .callback = on_key_cancel },
+};
 
 enum poller_type {
     POLLER_TYPE_TIME,
@@ -85,8 +100,17 @@ static const struct poller_spec poller_spec_list[POLLER_TYPE_MAX] = {
     },
 };
 
+struct key_callback_args {
+    struct player_osc_ctx *osc;
+    struct ui_context *ctx;
+    struct mpv_handle *mpv;
+    struct MPContext *mpc;
+};
+
 struct player_osc_ctx {
     bool show_osc;
+    struct key_helper_ctx key_ctx;
+
     bstr media_title;
     int progress_bar_width;
     char time_text[8];
@@ -187,13 +211,17 @@ static bool ellipsize_bstr(bstr *str, int max_count)
     return true;
 }
 
-struct player_osc_ctx *player_osc_create_ctx(void *parent, struct mpv_handle *mpv)
+struct player_osc_ctx *player_osc_create_ctx(void *parent)
+{
+    return ta_zalloc_size(parent, sizeof(struct player_osc_ctx));
+}
+
+void player_osc_setup(struct player_osc_ctx *c, struct mpv_handle *mpv, struct MPContext *mpc)
 {
     mpv_observe_property(mpv, 0, "pause", MPV_FORMAT_FLAG);
     mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv, 0, "percent-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv, 0, "media-title", MPV_FORMAT_STRING);
-    return ta_zalloc_size(parent, sizeof(struct player_osc_ctx));
 }
 
 void do_show_osc(struct player_osc_ctx *c, struct ui_context *ctx, bool delayed_hide)
@@ -339,7 +367,57 @@ void player_osc_on_draw(struct player_osc_ctx *c, struct ui_context *ctx)
     do_draw_overlay_top(c, ctx);
 }
 
-void player_osc_on_poll(struct player_osc_ctx *c, struct ui_context *ctx)
+void player_osc_on_poll(struct player_osc_ctx *c, struct ui_context *ctx,
+                        struct mpv_handle *mpv, struct MPContext *mpc)
 {
+    int64_t time = ui_panel_common_get_frame_time(ctx);
     poller_run(c, ctx, false);
+    key_helper_poll(&c->key_ctx, time, &(struct key_callback_args) {
+        .osc = c,
+        .ctx = ctx,
+        .mpv = mpv,
+        .mpc = mpc,
+    });
+}
+
+void player_osc_on_key(struct player_osc_ctx *c, struct ui_context *ctx,
+                       struct mpv_handle *mpv, struct MPContext *mpc, struct ui_key *key)
+{
+    int64_t time = ui_panel_common_get_frame_time(ctx);
+    int n = MP_ARRAY_SIZE(key_helper_spec_list);
+    const struct key_helper_spec *list = key_helper_spec_list;
+    key_helper_dispatch(&c->key_ctx, key, time, list, n, &(struct key_callback_args) {
+        .osc = c,
+        .ctx = ctx,
+        .mpv = mpv,
+        .mpc = mpc,
+    });
+}
+
+static void on_key_seek(void *p, const void *data, int repeat)
+{
+    struct key_callback_args *args = p;
+    int amount = (intptr_t) data * MPMAX(repeat, 1);
+    mpv_command_node_async(args->mpv, 0, &(mpv_node) {
+        .format = MPV_FORMAT_NODE_ARRAY,
+        .u.list = &(struct mpv_node_list) {
+            .num = 2,
+            .values = (mpv_node[]) {
+                (mpv_node) { .format = MPV_FORMAT_STRING, .u.string = "seek" },
+                (mpv_node) { .format = MPV_FORMAT_DOUBLE, .u.double_ = amount },
+            },
+        },
+    });
+}
+
+static void on_key_ok(void *p, const void *data, int repeat)
+{
+    struct key_callback_args *args = p;
+    mpv_command_async(args->mpv, 0, (const char*[]) { "cycle", "pause", NULL });
+}
+
+static void on_key_cancel(void *p, const void *data, int repeat)
+{
+    struct key_callback_args *args = p;
+    mpv_command_async(args->mpv, 0, (const char*[]) { "quit", NULL });
 }

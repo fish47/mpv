@@ -5,18 +5,9 @@
 
 #include "ta/ta.h"
 #include "player/core.h"
-#include "input/input.h"
-#include "input/keycodes.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
-
-enum key_act {
-    KEY_ACT_DROP,
-    KEY_ACT_INPUT,
-    KEY_ACT_SEND_QUIT,
-    KEY_ACT_SEND_TOGGLE,
-};
 
 struct priv_panel {
     mpv_handle *mpv_handle;
@@ -62,6 +53,7 @@ static bool player_init(struct ui_context *ctx, void *p)
 {
     struct priv_panel *priv = ctx->priv_panel;
     priv->destroy_done = ATOMIC_VAR_INIT(false);
+    priv->osc_ctx = player_osc_create_ctx(priv);
     priv->mpv_handle = mpv_create_vita(&priv->mpv_ctx);
     if (!priv->mpv_handle)
         return false;
@@ -73,16 +65,15 @@ static bool player_init(struct ui_context *ctx, void *p)
     if (mpv_initialize(priv->mpv_handle) != 0)
         return false;
 
-    struct ui_panel_player_init_params *params = p;
-    if (params) {
+    player_osc_setup(priv->osc_ctx, priv->mpv_handle, priv->mpv_ctx);
+    if (p) {
+        struct ui_panel_player_init_params *params = p;
         if (params->enable_perf)
             priv->perf_ctx = player_perf_create_ctx(priv);
         mpv_command(priv->mpv_handle, (const char*[]) {
             "loadfile", params->file_path, NULL
         });
     }
-
-    priv->osc_ctx = player_osc_create_ctx(priv, priv->mpv_handle);
     return true;
 }
 
@@ -143,7 +134,7 @@ static void player_on_poll(struct ui_context *ctx)
     if (!priv->mpv_handle)
         return;
 
-    player_osc_on_poll(priv->osc_ctx, ctx);
+    player_osc_on_poll(priv->osc_ctx, ctx, priv->mpv_handle, priv->mpv_ctx);
     if (priv->perf_ctx)
         player_perf_poll(priv->perf_ctx, ctx, priv->mpv_ctx);
 
@@ -160,83 +151,11 @@ static void player_on_poll(struct ui_context *ctx)
     }
 }
 
-static int resolve_mp_key_code(enum ui_key_code key, enum key_act *out_act)
-{
-    switch (key) {
-    case UI_KEY_CODE_VITA_DPAD_LEFT:
-        return MP_KEY_GAMEPAD_DPAD_LEFT;
-    case UI_KEY_CODE_VITA_DPAD_RIGHT:
-        return MP_KEY_GAMEPAD_DPAD_RIGHT;
-    case UI_KEY_CODE_VITA_DPAD_UP:
-        return MP_KEY_GAMEPAD_DPAD_UP;
-    case UI_KEY_CODE_VITA_DPAD_DOWN:
-        return MP_KEY_GAMEPAD_DPAD_DOWN;
-    case UI_KEY_CODE_VITA_ACTION_SQUARE:
-        return MP_KEY_GAMEPAD_ACTION_LEFT;
-    case UI_KEY_CODE_VITA_ACTION_TRIANGLE:
-        return MP_KEY_GAMEPAD_ACTION_UP;
-    case UI_KEY_CODE_VITA_TRIGGER_L:
-        return MP_KEY_GAMEPAD_LEFT_SHOULDER;
-    case UI_KEY_CODE_VITA_TRIGGER_R:
-        return MP_KEY_GAMEPAD_RIGHT_SHOULDER;
-    case UI_KEY_CODE_VITA_START:
-        return MP_KEY_GAMEPAD_START;
-    case UI_KEY_CODE_VITA_SELECT:
-        return MP_KEY_GAMEPAD_MENU;
-
-    case UI_KEY_CODE_VITA_ACTION_CIRCLE:
-    case UI_KEY_CODE_VITA_ACTION_CROSS:
-        // ignore associated key bindings
-        break;
-
-    case UI_KEY_CODE_VITA_VIRTUAL_OK:
-        *out_act = KEY_ACT_SEND_TOGGLE;
-        return 0;
-    case UI_KEY_CODE_VITA_VIRTUAL_CANCEL:
-        *out_act = KEY_ACT_SEND_QUIT;
-        return 0;
-    }
-
-    *out_act = KEY_ACT_DROP;
-    return 0;
-}
-
-static int resolve_mp_input_key(uint32_t code, enum ui_key_state state)
-{
-    switch (state) {
-    case UI_KEY_STATE_DOWN:
-        return code | MP_KEY_STATE_DOWN;
-    case UI_KEY_STATE_UP:
-        return code | MP_KEY_STATE_UP;
-    }
-
-    // it is unlikely to reach here
-    return MP_KEY_UNMAPPED;
-}
-
 static void player_on_key(struct ui_context *ctx, struct ui_key *key)
 {
     struct priv_panel *priv = ctx->priv_panel;
-    if (!priv->mpv_handle)
-        return;
-
-    enum key_act act = KEY_ACT_INPUT;
-    int code = resolve_mp_key_code(key->code, &act);
-    switch (act) {
-    case KEY_ACT_DROP:
-        break;
-    case KEY_ACT_INPUT:
-        mp_input_put_key(priv->mpv_ctx->input, resolve_mp_input_key(code, key->state));
-        break;
-    case KEY_ACT_SEND_QUIT:
-        if (key->state == UI_KEY_STATE_DOWN)
-            mpv_command_async(priv->mpv_handle, 0, (const char*[]) { "quit", NULL });
-        break;
-    case KEY_ACT_SEND_TOGGLE:
-        if (key->state == UI_KEY_STATE_DOWN)
-            mpv_command_async(priv->mpv_handle, 0, (const char*[]) { "cycle", "pause", NULL });
-        break;
-    }
+    if (priv->mpv_handle)
+        player_osc_on_key(priv->osc_ctx, ctx, priv->mpv_handle, priv->mpv_ctx, key);
 }
 
 const struct ui_panel ui_panel_player = {
