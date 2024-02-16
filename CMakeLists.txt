@@ -382,6 +382,8 @@ list(APPEND mpv_src_files
     osdep/vita/player_perf.c
     osdep/vita/shape_draw.h
     osdep/vita/shape_draw.c
+    osdep/vita/key_helper.h
+    osdep/vita/key_helper.c
 )
 
 set(_emulator_flag 0)

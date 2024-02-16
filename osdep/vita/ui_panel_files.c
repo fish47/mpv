@@ -2,6 +2,7 @@
 #include "ui_device.h"
 #include "ui_driver.h"
 #include "ui_panel.h"
+#include "key_helper.h"
 #include "shape_draw.h"
 #include "misc/bstr.h"
 #include "ta/ta_talloc.h"
@@ -81,17 +82,31 @@
 #define DPAD_ACT_TRIGGER_DELAY_US   (600 * 1000)
 #define DPAD_ACT_REPEAT_DELAY_US    (40 * 1000)
 
-struct dpad_act_spec {
-    enum ui_key_code key;
-    int cursor_offset;
-    int page_offset;
+struct sort_act {
+    int field_offset;
+    int order_flip;
 };
 
-static const struct dpad_act_spec dpad_act_spec_list[] = {
-    { .key = UI_KEY_CODE_VITA_DPAD_UP, .cursor_offset = -1, .page_offset = 0 },
-    { .key = UI_KEY_CODE_VITA_DPAD_DOWN, .cursor_offset = 1, .page_offset = 0 },
-    { .key = UI_KEY_CODE_VITA_DPAD_LEFT, .cursor_offset = 0, .page_offset = -1 },
-    { .key = UI_KEY_CODE_VITA_DPAD_RIGHT, .cursor_offset = 0, .page_offset = 1, },
+struct dpad_act {
+    int offset_cursor;
+    int offset_page;
+};
+
+static void on_key_dpad(void *p, const void *data, int repeat);
+static void on_key_sort(void *p, const void *data, int repeat);
+static void on_key_ok(void *p, const void *data, int repeat);
+static void on_key_cancel(void *p, const void *data, int repeat);
+
+static const struct key_helper_spec key_helper_spec_list[] = {
+    { .key = UI_KEY_CODE_VITA_DPAD_UP, .callback = on_key_dpad, .repeatable = true, .data = &(struct dpad_act) { .offset_cursor = -1 } },
+    { .key = UI_KEY_CODE_VITA_DPAD_DOWN, .callback = on_key_dpad, .repeatable = true, .data = &(struct dpad_act) { .offset_cursor = 1 } },
+    { .key = UI_KEY_CODE_VITA_DPAD_LEFT, .callback = on_key_dpad, .repeatable = true, .data = &(struct dpad_act) { .offset_page = -1 } },
+    { .key = UI_KEY_CODE_VITA_DPAD_RIGHT, .callback = on_key_dpad, .repeatable = true, .data = &(struct dpad_act) { .offset_page = 1 } },
+    { .key = UI_KEY_CODE_VITA_VIRTUAL_OK, .callback = on_key_ok },
+    { .key = UI_KEY_CODE_VITA_VIRTUAL_CANCEL, .callback = on_key_cancel },
+    { .key = UI_KEY_CODE_VITA_ACTION_TRIANGLE, .callback = on_key_sort, .data = &(struct sort_act) { .order_flip = 1 } },
+    { .key = UI_KEY_CODE_VITA_TRIGGER_L, .callback = on_key_sort, .data = &(struct sort_act) { .field_offset = -1 } },
+    { .key = UI_KEY_CODE_VITA_TRIGGER_R, .callback = on_key_sort, .data = &(struct sort_act) { .field_offset = 1 } },
 };
 
 struct size_spec {
@@ -176,16 +191,13 @@ struct priv_panel {
     bstr work_dir;
     struct cursor_data cursor_pos;
     struct cache_data cache_data;
+    struct key_helper_ctx key_ctx;
 
     int sort_field_idx;
     int sort_field_order;
 
     struct cursor_data *cursor_pos_stack;
     int cursor_pos_count;
-
-    const struct dpad_act_spec *pressed_dpad_act;
-    int64_t presssed_dpad_start_time;
-    int pressed_dpad_handled_count;
 };
 
 static bool is_special_white_space(char c)
@@ -774,75 +786,42 @@ static void files_on_draw(struct ui_context *ctx)
     do_draw_content(ctx, NULL, NULL, PATH_ITEM_FIELD_DATE | PATH_ITEM_FIELD_SIZE);
 }
 
-static void do_move_cursor(struct ui_context *ctx,
-                           const struct dpad_act_spec *spec, int count)
+static void on_key_ok(void *p, const void *data, int repeat)
 {
+    push_path(p);
+}
+
+static void on_key_cancel(void *p, const void *data, int repeat)
+{
+    pop_path(p);
+}
+
+static void on_key_dpad(void *p, const void *data, int repeat)
+{
+    const struct dpad_act *act = data;
+    struct ui_context *ctx = p;
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
     if (cache->path_item_count <= 0)
         return;
 
-    int offset_c = spec->cursor_offset * count;
-    int offset_p = spec->page_offset * count;
+    int count = MPMAX(repeat, 1);
     bool changed = cursor_pos_move(&priv->cursor_pos,
-                                   offset_c, offset_p, cache->path_item_count);
+                                   act->offset_cursor * count,
+                                   act->offset_page * count,
+                                   cache->path_item_count);
     if (changed)
         ui_panel_common_invalidate(ctx);
 }
 
-static bool do_handle_dpad_trigger(struct ui_context *ctx, struct ui_key *key)
+static void on_key_sort(void *p, const void *data, int repeat)
 {
-    const struct dpad_act_spec *spec = NULL;
-    for (size_t i = 0; i < MP_ARRAY_SIZE(dpad_act_spec_list); ++i) {
-        if (dpad_act_spec_list[i].key == key->code) {
-            spec = &dpad_act_spec_list[i];
-            break;
-        }
-    }
-
-    if (!spec)
-        return false;
-
-    struct priv_panel *priv = ctx->priv_panel;
-    switch (key->state) {
-    case UI_KEY_STATE_DOWN:
-        priv->pressed_dpad_act = spec;
-        priv->presssed_dpad_start_time = ui_panel_common_get_frame_time(ctx);
-        priv->pressed_dpad_handled_count = 1;
-        do_move_cursor(ctx, spec, 1);
-        break;
-    case UI_KEY_STATE_UP:
-        priv->pressed_dpad_act = NULL;
-        priv->presssed_dpad_start_time = 0;
-        priv->pressed_dpad_handled_count = 0;
-        break;
-    }
-    return true;
-}
-
-static void do_handle_dpad_pressed(struct ui_context *ctx)
-{
-    struct priv_panel *priv = ctx->priv_panel;
-    if (!priv->pressed_dpad_act)
-        return;
-
-    int delta = ui_panel_common_get_frame_time(ctx)
-            - priv->presssed_dpad_start_time
-            - DPAD_ACT_TRIGGER_DELAY_US;
-    int count = delta / DPAD_ACT_REPEAT_DELAY_US - priv->pressed_dpad_handled_count;
-    if (count <= 0)
-        return;
-
-    priv->pressed_dpad_handled_count += count;
-    do_move_cursor(ctx, priv->pressed_dpad_act, count);
-}
-
-static void do_change_cmp_func(struct ui_context *ctx, int f_offset, int flip)
-{
+    const struct sort_act *act = data;
+    struct ui_context *ctx = p;
     struct priv_panel *priv = ctx->priv_panel;
     size_t field_count = MP_ARRAY_SIZE(field_title_spec_list);
-    int new_idx = MPCLAMP(priv->sort_field_idx + f_offset, 0, field_count - 1);
-    int new_order = (priv->sort_field_order ^ flip);
+    int new_idx = MPCLAMP(priv->sort_field_idx + act->field_offset, 0, field_count - 1);
+    int new_order = (priv->sort_field_order ^ act->order_flip);
     if (new_idx == priv->sort_field_idx && new_order == priv->sort_field_order)
         return;
 
@@ -854,37 +833,19 @@ static void do_change_cmp_func(struct ui_context *ctx, int f_offset, int flip)
 
 static void files_on_key(struct ui_context *ctx, struct ui_key *key)
 {
-    bool done_dpad = do_handle_dpad_trigger(ctx, key);
-    if (done_dpad)
-        return;
-
-    if (key->state != UI_KEY_STATE_DOWN)
-        return;
-
-    switch (key->code) {
-    case UI_KEY_CODE_VITA_VIRTUAL_OK:
-        push_path(ctx);
-        break;
-    case UI_KEY_CODE_VITA_VIRTUAL_CANCEL:
-        pop_path(ctx);
-        break;
-    case UI_KEY_CODE_VITA_ACTION_TRIANGLE:
-        do_change_cmp_func(ctx, 0, 1);
-        break;
-    case UI_KEY_CODE_VITA_TRIGGER_L:
-        do_change_cmp_func(ctx, -1, 0);
-        break;
-    case UI_KEY_CODE_VITA_TRIGGER_R:
-        do_change_cmp_func(ctx, 1, 0);
-        break;
-    default:
-        break;
-    }
+    struct priv_panel *priv = ctx->priv_panel;
+    key_helper_dispatch(&priv->key_ctx, key,
+                        ui_panel_common_get_frame_time(ctx),
+                        key_helper_spec_list,
+                        MP_ARRAY_SIZE(key_helper_spec_list),
+                        ctx);
 }
 
 static void files_on_poll(struct ui_context *ctx)
 {
-    do_handle_dpad_pressed(ctx);
+    struct priv_panel *priv = ctx->priv_panel;
+    int64_t time = ui_panel_common_get_frame_time(ctx);
+    key_helper_poll(&priv->key_ctx, time, ctx);
 }
 
 const struct ui_panel ui_panel_files = {
