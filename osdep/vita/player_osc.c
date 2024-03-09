@@ -226,9 +226,13 @@ void player_osc_setup(struct player_osc_ctx *c, struct mpv_handle *mpv, struct M
 
 void do_show_osc(struct player_osc_ctx *c, struct ui_context *ctx, bool delayed_hide)
 {
-    c->show_osc = true;
-    poller_run(c, ctx, true);
-    ui_panel_common_invalidate(ctx);
+    // if osc is hidden, data fields will not be updated anymore,
+    // so a forced refresh is necessary before showing osc.
+    if (!c->show_osc) {
+        c->show_osc = true;
+        poller_run(c, ctx, true);
+        ui_panel_common_invalidate(ctx);
+    }
 
     if (delayed_hide)
         poller_schedule(c, ctx, POLLER_TYPE_HIDE);
