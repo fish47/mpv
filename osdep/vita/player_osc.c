@@ -109,6 +109,7 @@ struct key_callback_args {
 
 struct player_osc_ctx {
     bool show_osc;
+    int pause_state;
     struct key_helper_ctx key_ctx;
 
     bstr media_title;
@@ -238,23 +239,25 @@ void do_show_osc(struct player_osc_ctx *c, struct ui_context *ctx, bool delayed_
         poller_schedule(c, ctx, POLLER_TYPE_HIDE);
 }
 
-void player_osc_on_event(struct player_osc_ctx *c, struct ui_context *ctx, struct mpv_event *e)
+static void do_handle_props(struct player_osc_ctx *c, struct ui_context *ctx, mpv_event_property *prop)
 {
-    if (e->event_id != MPV_EVENT_PROPERTY_CHANGE)
-        return;
-
-    mpv_event_property *prop = e->data;
     if (prop->format == MPV_FORMAT_NONE)
         return;
 
+    bool redraw = false;
     if (strcmp(prop->name, "pause") == 0) {
-        do_show_osc(c, ctx, true);
+        // to ignore the first property event, which notifies clients of its initial value,
+        // we keep track of whether its value is changed and show osc if it happens.
+        int *pause = prop->data;
+        if (c->pause_state != *pause) {
+            c->pause_state = *pause;
+            do_show_osc(c, ctx, true);
+        }
     } else if (strcmp(prop->name, "percent-pos") == 0) {
         double *percent = prop->data;
         int full_width = (LAYOUT_PROGRESS_BAR_R - LAYOUT_PROGRESS_BAR_L);
         int new_width = full_width * (*percent) / 100;
-        if (new_width == c->progress_bar_width)
-            return;
+        redraw = ((new_width != c->progress_bar_width));
         c->progress_bar_width = new_width;
     } else if (strcmp(prop->name, "media-title") == 0) {
         const char **str = prop->data;
@@ -264,11 +267,19 @@ void player_osc_on_event(struct player_osc_ctx *c, struct ui_context *ctx, struc
         bstr_xappend(c, &c->media_title, title);
         if (cut)
             bstr_xappend(c, &c->media_title, bstr0("..."));
-    } else {
-        return;
+        redraw = true;
     }
 
-    ui_panel_common_invalidate(ctx);
+    if (redraw)
+        ui_panel_common_invalidate(ctx);
+}
+
+void player_osc_on_event(struct player_osc_ctx *c, struct ui_context *ctx, struct mpv_event *e)
+{
+    if (e->event_id == MPV_EVENT_PROPERTY_CHANGE)
+        do_handle_props(c, ctx, e->data);
+    else if (e->event_id == MPV_EVENT_SEEK)
+        do_show_osc(c, ctx, true);
 }
 
 static void do_draw_overlay_top(struct player_osc_ctx *c, struct ui_context *ctx)
