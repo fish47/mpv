@@ -7,8 +7,13 @@
 
 struct emulator_platform_data {
     GLFWwindow *window;
-    const char *font_path;
+    void *fontconfig;
+    char *fallback_font;
     bool enable_dr;
 };
 
 struct emulator_platform_data *emulator_get_platform_data(struct ui_context* ctx);
+
+void emulator_fontconfig_init(void *parent, void **fc);
+
+bool emulator_fontconfig_select(void *fc, int codepoint, char **best_path, int *best_idx);

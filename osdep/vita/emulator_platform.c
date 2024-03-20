@@ -4,8 +4,8 @@
 #include "emulator.h"
 #include "ta/ta.h"
 
+#include <stdlib.h>
 #include <getopt.h>
-#include <limits.h>
 #include <sys/stat.h>
 
 struct key_map_item {
@@ -119,21 +119,26 @@ static void on_window_close(GLFWwindow *window)
 
 static bool do_set_param_path(void *parent, char **dst, const char *src, mode_t type)
 {
-    char buf[PATH_MAX];
-    char *normalized = realpath(src, buf);
+    bool result = false;
+    char *normalized = realpath(src, NULL);
     if (!normalized)
-        return false;
+        goto done;
 
     struct stat path_stat;
     if (stat(normalized, &path_stat) != 0)
-        return false;
+        goto done;
 
     if ((path_stat.st_mode & S_IFMT) != type)
-        return false;
+        goto done;
 
+    result = true;
     TA_FREEP(dst);
     *dst = ta_strdup(parent, src);
-    return true;
+
+done:
+    if (normalized)
+        free(normalized);
+    return result;
 }
 
 static void print_usage(const struct cmd_option *options, int n)
@@ -166,16 +171,22 @@ static void print_usage(const struct cmd_option *options, int n)
 static bool parse_options(struct priv_platform *priv, int argc, char *argv[])
 {
     bool swap_ok = false;
-    const struct cmd_option cmd_options[] = {
+    int cmd_count = 3;
+    struct cmd_option cmd_options[4] = {
         { "swap-ok", CMD_OPTION_TYPE_BOOL, false, &swap_ok },
         { "enable-dr", CMD_OPTION_TYPE_BOOL, false, &priv->platform_data.enable_dr },
-        { "font-path", CMD_OPTION_TYPE_FILE, true, &priv->platform_data.font_path },
         { "files-dir", CMD_OPTION_TYPE_DIR, true, &priv->files_dir },
     };
 
+    if (!emulator_fontconfig_select(priv->platform_data.fontconfig, 0, NULL, NULL)) {
+        cmd_options[cmd_count++] = (struct cmd_option) {
+            "font-path", CMD_OPTION_TYPE_FILE, true, &priv->platform_data.fallback_font
+        };
+    }
+
     int missed_opts = 0;
-    struct option opt_options[MP_ARRAY_SIZE(cmd_options) + 1] = {0};
-    for (int i = 0; i < MP_ARRAY_SIZE(cmd_options); ++i) {
+    struct option opt_options[5] = {0};
+    for (int i = 0; i < cmd_count; ++i) {
         struct option *opt = &opt_options[i];
         const struct cmd_option *cmd = &cmd_options[i];
         opt->name = cmd->name;
@@ -227,13 +238,8 @@ fail:
     return false;
 }
 
-static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
+static bool init_glfw_window(struct ui_context *ctx, GLFWwindow **result)
 {
-    struct priv_platform *priv = get_priv_platform(ctx);
-    priv->key_map_ext = &platform_key_map_virtual_asia;
-
-    if (!parse_options(priv, argc, argv))
-        return false;
 
     if (!glfwInit())
         return false;
@@ -261,7 +267,23 @@ static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
     glfwSetWindowCloseCallback(window, on_window_close);
     glfwSwapInterval(0);
 
-    priv->platform_data.window = window;
+    *result = window;
+    return true;
+}
+
+static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
+{
+    struct priv_platform *priv = get_priv_platform(ctx);
+    priv->key_map_ext = &platform_key_map_virtual_asia;
+
+    if (!init_glfw_window(ctx, &priv->platform_data.window))
+        return false;
+
+    bool need_fallback = false;
+    emulator_fontconfig_init(priv, &priv->platform_data.fontconfig);
+    if (!parse_options(priv, argc, argv))
+        return false;
+
     return true;
 }
 

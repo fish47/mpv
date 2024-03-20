@@ -2,6 +2,7 @@
 #include "ui_device.h"
 #include "ui_driver.h"
 #include "shape_draw.h"
+#include "misc/linked_list.h"
 #include "common/common.h"
 #include "video/img_format.h"
 
@@ -203,8 +204,6 @@ union vram_header_aligned {
 struct freetype_lib {
     FT_Library lib;
     FTC_Manager manager;
-    FTC_CMapCache cmap_cache;
-    FTC_ImageCache image_cache;
 };
 
 struct draw_font_cache_entry {
@@ -246,9 +245,24 @@ struct ui_texture {
     bool attached;
 };
 
+struct freetype_font_data {
+    const char *file_path;
+    int face_idx;
+    FTC_Manager ftc_manager;
+    FTC_CMapCache cmap_cache;
+    FTC_ImageCache image_cache;
+    struct {
+        struct freetype_font_data *prev;
+        struct freetype_font_data *next;
+    } list;
+};
+
 struct ui_font {
-    const char *font_path;
     int font_id;
+    struct {
+        struct freetype_font_data *head;
+        struct freetype_font_data *tail;
+    } font_data;
 };
 
 struct ui_color_vertex {
@@ -433,8 +447,9 @@ static void make_normalize_matrix(float *matrix)
 static FT_Error ftc_request_cb(FTC_FaceID face_id, FT_Library lib,
                                FT_Pointer data, FT_Face *face)
 {
-    struct ui_font *font = (void*) face_id;
-    return FT_New_Face(lib, font->font_path, 0, face);
+    struct priv_render *priv = data;
+    struct freetype_font_data *font_data = face_id;
+    return FT_New_Face(lib, font_data->file_path, font_data->face_idx, face);
 }
 
 static void uninit_freetype(void *p)
@@ -446,36 +461,26 @@ static void uninit_freetype(void *p)
 
 static bool init_freetype(struct priv_render *priv)
 {
-    FT_Library lib;
-    FTC_Manager ft_manager;
-    FTC_CMapCache ft_cmap_cache;
-    FTC_ImageCache ft_image_cache;
+    FT_Library lib = NULL;
+    FTC_Manager ft_manager = NULL;
     if (FT_Init_FreeType(&lib) != 0)
-        goto error_lib;
-    if (FTC_Manager_New(lib, 0, 0, 0, &ftc_request_cb, NULL, &ft_manager) != 0)
-        goto error_manager;
-    if (FTC_CMapCache_New(ft_manager, &ft_cmap_cache) != 0)
-        goto error_cmap;
-    if (FTC_ImageCache_New(ft_manager, &ft_image_cache) != 0)
-        goto error_image;
+        goto fail;
+    if (FTC_Manager_New(lib, 0, 0, 0, &ftc_request_cb, priv, &ft_manager) != 0)
+        goto fail;
 
-    struct freetype_lib *result = ta_new_ptrtype(priv, result);
-    *result = (struct freetype_lib) {
+    priv->ft_lib = ta_new_ptrtype(priv, priv->ft_lib);
+    *priv->ft_lib = (struct freetype_lib) {
         .lib = lib,
         .manager = ft_manager,
-        .cmap_cache = ft_cmap_cache,
-        .image_cache = ft_image_cache,
     };
-    ta_set_destructor(result, uninit_freetype);
-    priv->ft_lib = result;
+    ta_set_destructor(priv->ft_lib, uninit_freetype);
     return true;
 
-error_cmap:
-error_image:
-    FTC_Manager_Done(ft_manager);
-error_manager:
-    FT_Done_FreeType(lib);
-error_lib:
+fail:
+    if (ft_manager)
+        FTC_Manager_Done(ft_manager);
+    if (lib)
+        FT_Done_FreeType(lib);
     return false;
 }
 
@@ -904,51 +909,126 @@ static struct draw_font_cache *font_cache_find(struct draw_font_cache **head,
     return NULL;
 }
 
+static FT_Glyph do_find_glyph(FTC_Manager mgr,
+                              struct freetype_font_data *data,
+                              int size, int codepoint)
+{
+    FT_Face face = NULL;
+    FTC_FaceID face_id = (FTC_FaceID) data;
+    if (FTC_Manager_LookupFace(mgr, face_id, &face) != 0)
+        return NULL;
+
+    FT_Int cmap_idx = FT_Get_Charmap_Index(face->charmap);
+    if (cmap_idx < 0)
+        return NULL;
+
+    // respect the forced 'no glyph' request
+    FT_UInt glyph_idx = FTC_CMapCache_Lookup(data->cmap_cache, face_id, cmap_idx, codepoint);
+    if (codepoint != 0 && glyph_idx == 0)
+        return NULL;
+
+    FTC_ScalerRec scaler = {
+        .face_id = face_id,
+        .width = size,
+        .height = size,
+        .pixel = 1,
+        .x_res = 0,
+        .y_res = 0,
+    };
+    FT_Glyph glyph = NULL;
+    FT_Error ret = FTC_ImageCache_LookupScaler(data->image_cache, &scaler,
+                                               (FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL),
+                                               glyph_idx, &glyph, NULL);
+    return (ret == 0) ? glyph : NULL;
+}
+
+static void font_data_destroy(void *p)
+{
+    struct freetype_font_data *data = p;
+    FTC_Manager_RemoveFaceID(data->ftc_manager, data);
+}
+
+static void do_append_ft_font_data(struct priv_render *priv,
+                                   struct ui_font *font,
+                                   char *path, int idx,
+                                   struct freetype_font_data **out)
+{
+    // each cache should be associated to only one typeface
+    FTC_CMapCache cmap_cache = NULL;
+    FTC_ImageCache image_cache = NULL;
+    FTC_CMapCache_New(priv->ft_lib->manager, &cmap_cache);
+    FTC_ImageCache_New(priv->ft_lib->manager, &image_cache);
+
+    struct freetype_font_data *data = ta_new_ptrtype(font, data);
+    ta_set_destructor(data, font_data_destroy);
+    *data = (struct freetype_font_data) {
+        .file_path = path,
+        .face_idx = idx,
+        .ftc_manager = priv->ft_lib->manager,
+        .cmap_cache = cmap_cache,
+        .image_cache = image_cache,
+    };
+    LL_APPEND(list, &font->font_data, data);
+    *out = data;
+}
+
+static FT_Glyph find_glyph(struct ui_context *ctx,
+                           struct ui_font *font,
+                           int size, int codepoint)
+{
+    // find from cached typefaces
+    struct priv_render *priv = ctx->priv_render;
+    struct freetype_font_data *font_data = font->font_data.head;
+    while (font_data) {
+        FT_Glyph glyph = do_find_glyph(priv->ft_lib->manager, font_data, size, codepoint);
+        if (glyph)
+            return glyph;
+        font_data = font_data->list.next;
+    }
+
+    int best_idx = 0;
+    char *best_font = NULL;
+    struct emulator_platform_data *data = emulator_get_platform_data(ctx);
+    emulator_fontconfig_select(data->fontconfig, codepoint, &best_font, &best_idx);
+    if (best_font) {
+        // take the ownership of path string
+        do_append_ft_font_data(priv, font, best_font, best_idx, &font_data);
+        ta_steal(font_data, best_font);
+    } else if (!font->font_data.head) {
+        // try the fallback typeface if we don't have any
+        do_append_ft_font_data(priv, font, data->fallback_font, 0, &font_data);
+    }
+
+    // try new typeface
+    if (font_data) {
+        FT_Glyph glyph = do_find_glyph(priv->ft_lib->manager, font_data, size, codepoint);
+        if (glyph)
+            return glyph;
+    }
+
+    return NULL;
+}
+
 static void font_cache_iterate(struct ui_context *ctx,
                                struct ui_font *font,
                                struct ui_font_draw_args *args,
                                void (*func)(FT_BitmapGlyph, void*),
                                void *data)
 {
-    FT_Face face;
-    FTC_FaceID face_id = (FTC_FaceID) font;
-    struct priv_render *priv = ctx->priv_render;
-    if (FTC_Manager_LookupFace(priv->ft_lib->manager, face_id, &face) != 0)
-        return;
-
-    FT_Int charmap_idx = FT_Get_Charmap_Index(face->charmap);
-    if (charmap_idx < 0)
-        return;
-
     bstr utf8_text = bstr0(args->text);
     while (true) {
         int codepoint = bstr_decode_utf8(utf8_text, &utf8_text);
         if (codepoint < 0)
             break;
 
-        FT_UInt glyph_idx = FTC_CMapCache_Lookup(priv->ft_lib->cmap_cache,
-                                                 face_id, charmap_idx, codepoint);
-        if (glyph_idx == 0)
+        FT_Glyph glyph = find_glyph(ctx, font, args->size, codepoint);
+        if (!glyph)
+            glyph = find_glyph(ctx, font, args->size, 0);
+
+        if (!glyph || glyph->format != FT_GLYPH_FORMAT_BITMAP)
             continue;
 
-        FTC_ScalerRec scaler = {
-            .face_id = face_id,
-            .width = args->size,
-            .height = args->size,
-            .pixel = 1,
-            .x_res = 0,
-            .y_res = 0,
-        };
-        FT_Glyph glyph;
-        FT_ULong flags = FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL;
-        FT_Error ret = FTC_ImageCache_LookupScaler(priv->ft_lib->image_cache,
-                                                   &scaler, flags, glyph_idx, &glyph, NULL);
-        if (ret != 0)
-            continue;
-        if (glyph->format != FT_GLYPH_FORMAT_BITMAP)
-            continue;
-
-        FT_BitmapGlyph casted = (void*) glyph;
+        FT_BitmapGlyph casted = (FT_BitmapGlyph) glyph;
         if (casted->bitmap.pixel_mode != FT_PIXEL_MODE_GRAY)
             continue;
 
@@ -1095,15 +1175,11 @@ static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
 
 static bool render_font_init(struct ui_context *ctx, struct ui_font **font)
 {
-    const char *path = emulator_get_platform_data(ctx)->font_path;
-    if (!path)
-        return false;
-
     struct priv_render *priv = ctx->priv_render;
     struct ui_font *result = ta_new_ptrtype(ctx, result);
     *result = (struct ui_font) {
         .font_id = ++priv->font_id,
-        .font_path = ta_strdup(result, path),
+        .font_data = NULL,
     };
     *font = result;
     return true;

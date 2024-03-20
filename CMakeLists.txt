@@ -483,6 +483,15 @@ else()
     find_package(OpenGL REQUIRED)
     find_package(Freetype REQUIRED)
     find_package(glfw3 REQUIRED)
+    pkg_check_modules(_pkg_fontconfig fontconfig)
+
+    if(${_pkg_fontconfig_FOUND})
+        list(APPEND mpv_src_files
+            osdep/vita/emulator_fontconfig_unix.c)
+    else()
+        list(APPEND mpv_src_files
+            osdep/vita/emulator_fontconfig_fallback.c)
+    endif()
 
     list(APPEND mpv_src_files
         osdep/vita/emulator.h
@@ -493,15 +502,18 @@ else()
     list(APPEND mpv_inc_dirs
         ${OPENAL_INCLUDE_DIR}
         ${OPENGL_INCLUDE_DIR}
-        ${FREETYPE_INCLUDE_DIRS})
+        ${FREETYPE_INCLUDE_DIRS}
+        ${_pkg_fontconfig_INCLUDE_DIRS})
 
     list(APPEND mpv_link_libs
         ${OPENAL_LIBRARY}
         ${OPENGL_LIBRARIES}
         ${FREETYPE_LIBRARIES}
-        glfw)
+        glfw
+        ${_pkg_fontconfig_LIBRARIES})
 
     list(APPEND mpv_compile_defs
+        ${Fontconfig_COMPILE_OPTIONS}
         _GNU_SOURCE
         GLFW_INCLUDE_ES2
         HAVE_GLIBC_THREAD_NAME=1)
