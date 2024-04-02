@@ -36,6 +36,7 @@ struct ui_texture_data_args {
 struct ui_texture_draw_args {
     struct mp_rect *src;
     struct mp_rect *dst;
+    ui_color *tint;
 };
 
 struct ui_platform_driver {
@@ -74,6 +75,8 @@ struct ui_render_driver {
 
     bool (*texture_init)(struct ui_context *ctx, struct ui_texture **tex,
                          enum ui_texure_fmt fmt, int w, int h, bool dr);
+    bool (*texture_decode)(struct ui_context *ctx, struct ui_texture **tex,
+                           const void *data, int size, int *w, int *h);
     void (*texture_uninit)(struct ui_context *ctx, struct ui_texture **tex);
     void (*texture_upload)(struct ui_context *ctx, struct ui_texture *tex,
                            struct ui_texture_data_args *args);
@@ -83,6 +86,8 @@ struct ui_render_driver {
 
     bool (*font_init)(struct ui_context *ctx, struct ui_font **font);
     void (*font_uninit)(struct ui_context *ctx, struct ui_font **font);
+    void (*font_measure)(struct ui_context *ctx, struct ui_font *font,
+                         const char* text, int size, int *w, int *h);
 
     void (*clip_start)(struct ui_context *ctx, struct mp_rect *rect);
     void (*clip_end)(struct ui_context *ctx);

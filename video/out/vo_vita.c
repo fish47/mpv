@@ -170,11 +170,11 @@ static void do_panel_draw(struct ui_context *ctx, void *p)
     if (priv->dr_enabled && !priv->dr_image_locked)
         return;
 
-    struct ui_texture_draw_args args = {
+    ui_render_driver_vita.draw_texture(ctx, priv->video_tex, &(struct ui_texture_draw_args) {
         .src = &priv->video_src_rect,
         .dst = &priv->video_dst_rect,
-    };
-    ui_render_driver_vita.draw_texture(ctx, priv->video_tex, &args);
+        .tint = NULL
+    });
 }
 
 static void do_render_init_vo_driver(void *p)

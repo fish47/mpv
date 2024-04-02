@@ -352,6 +352,22 @@ static bool render_texture_init(struct ui_context *ctx, struct ui_texture **tex,
     return false;
 }
 
+static bool render_texture_decode(struct ui_context *ctx, struct ui_texture **tex,
+                                  const void *data, int size, int *w, int *h)
+{
+    vita2d_texture *impl = vita2d_load_PNG_buffer(data);
+    if (!impl)
+        return false;
+
+    if (w)
+        *w = vita2d_texture_get_width(impl);
+    if (h)
+        *h = vita2d_texture_get_height(impl);
+
+    *tex = (void*) impl;
+    return true;
+}
+
 static void render_texture_uninit(struct ui_context *ctx, struct ui_texture **tex)
 {
     vita2d_texture **p_tex = (vita2d_texture**) tex;
@@ -476,10 +492,17 @@ static void render_draw_texture(struct ui_context *ctx, struct ui_texture *tex,
     vita2d_texture *impl = (vita2d_texture*) tex;
     float sx = (float) dst_w / tex_w;
     float sy = (float) dst_h / tex_h;
-    vita2d_draw_texture_part_scale(impl,
-                                   args->dst->x0, args->dst->y0,
-                                   args->src->x0, args->src->y0,
-                                   tex_w, tex_h, sx, sy);
+    if (args->tint) {
+        vita2d_draw_texture_tint_part_scale(impl,
+                                            args->dst->x0, args->dst->y0,
+                                            args->src->x0, args->src->y0,
+                                            tex_w, tex_h, sx, sy, *args->tint);
+    } else {
+        vita2d_draw_texture_part_scale(impl,
+                                       args->dst->x0, args->dst->y0,
+                                       args->src->x0, args->src->y0,
+                                       tex_w, tex_h, sx, sy);
+    }
 }
 
 static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
@@ -556,6 +579,7 @@ const struct ui_render_driver ui_render_driver_vita = {
     .dr_vram_unlock = render_dr_vram_unlock,
 
     .texture_init = render_texture_init,
+    .texture_decode = render_texture_decode,
     .texture_uninit = render_texture_uninit,
     .texture_upload = render_texture_upload,
     .texture_attach = render_texture_attach,

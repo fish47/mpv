@@ -6,11 +6,19 @@
 #include "common/common.h"
 #include "video/img_format.h"
 
+#include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
+#include <libavformat/avio.h>
+#include <libswscale/swscale.h>
+#include <libavcodec/codec.h>
+#include <libavcodec/avcodec.h>
+
 #include <freetype2/ft2build.h>
 #include FT_CACHE_H
 #include FT_FREETYPE_H
 
 #define PRIV_BUFFER_SIZE        (8 * 1024 * 1024)
+#define DECODE_BUFFER_SIZE      (4 * 1024)
 
 #define TEX_FMT_INTERNAL_A8     (1000)
 
@@ -213,11 +221,12 @@ struct draw_font_cache_entry {
 };
 
 struct draw_font_cache {
-    int w;
-    int h;
     GLuint tex;
-    int count;
-    struct gl_uv_vertex *buffer;
+    int tex_w;
+    int tex_h;
+    int draw_w;
+    int draw_count;
+    struct gl_uv_vertex *draw_buffer;
     struct draw_font_cache_entry entry;
     struct draw_font_cache *next;
 };
@@ -731,6 +740,175 @@ static void do_upload_tex_data(struct ui_context *ctx, struct ui_texture *tex,
     }
 }
 
+static bool do_drain_packet(AVCodecContext *avctx, AVFrame *frame, AVPacket *packet)
+{
+    int ret = avcodec_send_packet(avctx, packet);
+    if (ret < 0)
+        return false;
+
+    while (true) {
+        int ret = avcodec_receive_frame(avctx, frame);
+        if (ret == 0)
+            return true;
+        else
+            break;
+    }
+    return false;
+}
+
+static bool do_decode_image(struct ui_context *ctx,
+                            const uint8_t *data,
+                            int size, AVFrame *frame)
+{
+    AVPacket *packet = NULL;
+    AVIOContext *avio = NULL;
+    AVCodecContext *avctx = NULL;
+    AVCodecParserContext *parser = NULL;
+
+    // padding zero bytes are required by FFMPEG
+    struct priv_render *priv = ctx->priv_render;
+    uint8_t *buffer = priv->buffer;
+    memset(buffer + DECODE_BUFFER_SIZE, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+
+    const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_PNG);
+    if (!codec)
+        goto done;
+    packet = av_packet_alloc();
+    if (!packet)
+        goto done;
+    parser = av_parser_init(codec->id);
+    if (!parser)
+        goto done;
+    avctx = avcodec_alloc_context3(codec);
+    if (!avctx)
+        goto done;
+    int ret_open = avcodec_open2(avctx, codec, NULL);
+    if (ret_open != 0)
+        goto done;
+
+    bool eof = false;
+    bool found = false;
+    int copied = 0;
+    while (!eof && !found) {
+        uint8_t *chunk_data = buffer;
+        int chunk_size = MPCLAMP(size - copied, 0, DECODE_BUFFER_SIZE);
+        if (chunk_size)
+            memcpy(chunk_data, data + copied, chunk_size);
+        else
+            eof = true;
+        copied += chunk_size;
+
+        while (chunk_size || eof) {
+            // 'zero-size' is a nice-to-have EOF signal
+            int ret = av_parser_parse2(parser, avctx,
+                                       &packet->data, &packet->size,
+                                       chunk_data, chunk_size,
+                                       AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+            if (ret < 0)
+                goto done;
+
+            chunk_data += ret;
+            chunk_size -= ret;
+            if (packet->size)
+                found = do_drain_packet(avctx, frame, packet);
+            else if (eof)
+                break;
+
+            if (found)
+                goto done;
+        }
+    }
+    // flush pending data
+    found = do_drain_packet(avctx, frame, packet);
+
+done:
+    if (packet)
+        av_packet_free(&packet);
+    if (parser)
+        av_parser_close(parser);
+    if (ctx)
+        avcodec_free_context(&avctx);
+    return found;
+}
+
+static bool do_convert_image(AVFrame *frame, enum AVPixelFormat fmt)
+{
+    int ret = 0;
+    bool succeed = false;
+    AVFrame *result = NULL;
+    struct SwsContext *sws = NULL;
+
+    if (frame->format == fmt) {
+        succeed = true;
+        goto done;
+    }
+
+    sws = sws_alloc_context();
+    av_opt_set_int(sws, "srcw", frame->width, 0);
+    av_opt_set_int(sws, "srch", frame->height, 0);
+    av_opt_set_int(sws, "src_format", frame->format, 0);
+    av_opt_set_int(sws, "dstw", frame->width, 0);
+    av_opt_set_int(sws, "dsth", frame->height, 0);
+    av_opt_set_int(sws, "dst_format", fmt, 0);
+
+    ret = sws_init_context(sws, NULL, NULL);
+    if (ret < 0)
+        goto done;
+
+    result = av_frame_alloc();
+    ret = sws_scale_frame(sws, result, frame);
+    if (ret < 0)
+        goto done;
+
+    succeed = true;
+    av_frame_unref(frame);
+    av_frame_move_ref(frame, result);
+
+done:
+    if (sws)
+        sws_freeContext(sws);
+    if (result)
+        av_frame_free(&result);
+    return succeed;
+}
+
+static bool render_texture_decode(struct ui_context *ctx, struct ui_texture **tex,
+                                  const void *data, int size, int *w, int *h)
+{
+    bool succeed = false;
+    AVFrame frame = {0};
+    av_frame_unref(&frame);
+
+    bool decoded = do_decode_image(ctx, data, size, &frame);
+    if (!decoded)
+        goto done;
+
+    bool converted = do_convert_image(&frame, AV_PIX_FMT_RGBA);
+    if (!converted)
+        goto done;
+
+    bool created = render_texture_init(ctx, tex, TEX_FMT_RGBA,
+                                       frame.width, frame.height, false);
+    if (!created)
+        goto done;
+
+    succeed = true;
+    struct ui_texture_data_args args = {
+        .data = (const uint8_t**) frame.data,
+        .strides = frame.linesize,
+        .width = frame.width,
+        .height = frame.height,
+        .planes = 1,
+    };
+    do_upload_tex_data(ctx, *tex, &args);
+    *w = frame.width;
+    *h = frame.height;
+
+done:
+    av_frame_unref(&frame);
+    return succeed;
+}
+
 static bool render_texture_attach(struct ui_context *ctx, struct ui_texture *tex,
                                   struct ui_texture_data_args *args)
 {
@@ -865,8 +1043,9 @@ static void render_draw_texture(struct ui_context *ctx,
         .rect_n = 1,
     });
 
+    ui_color tint = args->tint ? *args->tint : -1;
     if (count)
-        do_render_draw_texture_ext(ctx, tex, priv->buffer, -1, 0, 0, count);
+        do_render_draw_texture_ext(ctx, tex, priv->buffer, tint, 0, 0, count);
 }
 
 static void font_cache_free_all(struct draw_font_cache **head)
@@ -1011,19 +1190,19 @@ static FT_Glyph find_glyph(struct ui_context *ctx,
 
 static void font_cache_iterate(struct ui_context *ctx,
                                struct ui_font *font,
-                               struct ui_font_draw_args *args,
+                               int size, const char *text,
                                void (*func)(FT_BitmapGlyph, void*),
                                void *data)
 {
-    bstr utf8_text = bstr0(args->text);
+    bstr utf8_text = bstr0(text);
     while (true) {
         int codepoint = bstr_decode_utf8(utf8_text, &utf8_text);
         if (codepoint < 0)
             break;
 
-        FT_Glyph glyph = find_glyph(ctx, font, args->size, codepoint);
+        FT_Glyph glyph = find_glyph(ctx, font, size, codepoint);
         if (!glyph)
-            glyph = find_glyph(ctx, font, args->size, 0);
+            glyph = find_glyph(ctx, font, size, 0);
 
         if (!glyph || glyph->format != FT_GLYPH_FORMAT_BITMAP)
             continue;
@@ -1039,12 +1218,14 @@ static void font_cache_iterate(struct ui_context *ctx,
 static void font_cache_cb_get_size(FT_BitmapGlyph glyph, void *p)
 {
     void **pack = p;
-    int *p_w = pack[0];
-    int *p_h = pack[1];
-    int *p_count = pack[2];
+    int *p_tex_w = pack[0];
+    int *p_tex_h = pack[1];
+    int *p_draw_w = pack[2];
+    int *p_count = pack[3];
     (*p_count)++;
-    *p_w += glyph->bitmap.width;
-    *p_h = MPMAX(*p_h, (int) glyph->bitmap.rows);
+    *p_tex_w += glyph->bitmap.width;
+    *p_draw_w += glyph->root.advance.x >> 16;
+    *p_tex_h = MPMAX(*p_tex_h, (int) glyph->bitmap.rows);
 }
 
 static void font_cache_cb_build_text(FT_BitmapGlyph glyph, void *p)
@@ -1089,12 +1270,12 @@ static void font_cache_destroy(void *p)
 
 static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
                                                  struct ui_font *font,
-                                                 struct ui_font_draw_args *args)
+                                                 int size, const char *text)
 {
     struct draw_font_cache_entry entry = {
         .font_id = font->font_id,
-        .font_size = args->size,
-        .text = args->text,
+        .font_size = size,
+        .text = text,
     };
 
     // reuse from old cache
@@ -1114,9 +1295,10 @@ static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
     // calculate text texture size
     int tex_w = 0;
     int tex_h = 0;
+    int draw_w = 0;
     int glyph_n = 0;
-    void *pack_get_size[] = { &tex_w, &tex_h, &glyph_n };
-    font_cache_iterate(ctx, font, args, font_cache_cb_get_size, pack_get_size);
+    void *pack_get_size[] = { &tex_w, &tex_h, &draw_w, &glyph_n };
+    font_cache_iterate(ctx, font, size, text, font_cache_cb_get_size, pack_get_size);
     if (!tex_w || !tex_h)
         return NULL;
 
@@ -1137,7 +1319,7 @@ static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
         priv, vert_rects, uv_rects, &tex,
         &build_idx, &build_off_tex, &build_off_vert
     };
-    font_cache_iterate(ctx, font, args, font_cache_cb_build_text, pack_build_text);
+    font_cache_iterate(ctx, font, size, text, font_cache_cb_build_text, pack_build_text);
 
     // calculate vertices and texture coordinates
     struct gl_uv_vertex *buffer = NULL;
@@ -1157,15 +1339,16 @@ static struct draw_font_cache *font_cache_ensure(struct ui_context *ctx,
     struct draw_font_cache *cache3 = ta_new_ptrtype(priv, cache3);
     ta_set_destructor(cache3, font_cache_destroy);
     *cache3 = (struct draw_font_cache) {
-        .w = tex_w,
-        .h = tex_h,
         .tex = tex_id,
-        .buffer = ta_steal(cache3, buffer),
-        .count = draw_n,
+        .tex_w = tex_w,
+        .tex_h = tex_h,
+        .draw_w = draw_w,
+        .draw_buffer = ta_steal(cache3, buffer),
+        .draw_count = draw_n,
         .entry = {
             .font_id = font->font_id,
-            .font_size = args->size,
-            .text = ta_strdup(cache3, args->text),
+            .font_size = size,
+            .text = ta_strdup(cache3, text),
         },
         .next = priv->font_cache_reused,
     };
@@ -1190,6 +1373,19 @@ static void render_font_uninit(struct ui_context *ctx, struct ui_font **font)
     TA_FREEP(font);
 }
 
+static void render_font_measure(struct ui_context *ctx, struct ui_font *font,
+                                const char *text, int size, int *w, int *h)
+{
+    struct draw_font_cache *cache = font_cache_ensure(ctx, font, size, text);
+    if (!cache)
+        return;
+
+    if (w)
+        *w = cache->draw_w;
+    if (h)
+        *h = cache->tex_h;
+}
+
 static void render_clip_start(struct ui_context *ctx, struct mp_rect *rect)
 {
     int inverted_y = VITA_SCREEN_H - rect->y1;
@@ -1205,18 +1401,18 @@ static void render_clip_end(struct ui_context *ctx)
 static void render_draw_font(struct ui_context *ctx, struct ui_font *font,
                              struct ui_font_draw_args *args)
 {
-    struct draw_font_cache *cache = font_cache_ensure(ctx, font, args);
+    struct draw_font_cache *cache = font_cache_ensure(ctx, font, args->size, args->text);
     if (!cache)
         return;
 
     struct ui_texture tex = {
         .fmt = TEX_FMT_INTERNAL_A8,
-        .w = cache->w,
-        .h = cache->h,
+        .w = cache->tex_w,
+        .h = cache->tex_h,
         .ids = { cache->tex },
     };
-    do_render_draw_texture_ext(ctx, &tex, cache->buffer,
-                               args->color, args->x, args->y, cache->count);
+    do_render_draw_texture_ext(ctx, &tex, cache->draw_buffer, args->color,
+                               args->x, args->y, cache->draw_count);
 }
 
 static bool render_draw_vertices_prepare(struct ui_context *ctx,
@@ -1284,12 +1480,14 @@ const struct ui_render_driver ui_render_driver_vita = {
 
     .texture_init = render_texture_init,
     .texture_uninit = render_texture_uninit,
+    .texture_decode = render_texture_decode,
     .texture_upload = render_texture_upload,
     .texture_attach = render_texture_attach,
     .texture_detach = render_texture_detach,
 
     .font_init = render_font_init,
     .font_uninit = render_font_uninit,
+    .font_measure = render_font_measure,
 
     .clip_start = render_clip_start,
     .clip_end = render_clip_end,

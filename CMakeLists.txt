@@ -404,6 +404,20 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/config.h "\
 
 
 # generate file
+set(_mpv_icons)
+list(APPEND _mpv_icons
+    arrow_downward.png
+    file_audio.png
+    file_video.png
+    file_default.png
+    folder_default.png
+)
+foreach(_icon ${_mpv_icons})
+    _generate_source(mpv_gen_files
+        ${mpv_gen_dir}/generated/etc/vita/icons/${_icon}.inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/TOOLS/file2string.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/etc/vita/icons/${_icon})
+endforeach()
 _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/version.h
     ${CMAKE_CURRENT_SOURCE_DIR}/version.py)
 _generate_source(mpv_gen_files ${mpv_gen_dir}/generated/ebml_defs.inc

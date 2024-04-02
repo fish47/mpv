@@ -7,7 +7,24 @@
 #include "misc/bstr.h"
 #include "ta/ta_talloc.h"
 
+static const char icon_arrow_downward[] =
+#include "generated/etc/vita/icons/arrow_downward.png.inc"
+;
+static const char icon_folder_default[] =
+#include "generated/etc/vita/icons/folder_default.png.inc"
+;
+static const char icon_file_default[] =
+#include "generated/etc/vita/icons/file_default.png.inc"
+;
+static const char icon_file_audio[] =
+#include "generated/etc/vita/icons/file_audio.png.inc"
+;
+static const char icon_file_video[] =
+#include "generated/etc/vita/icons/file_video.png.inc"
+;
+
 #include <time.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -16,71 +33,142 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define PATH_SEP "/"
-#define PATH_DIR_PARENT ".."
-#define PATH_DIR_CURRENT "."
-#define PATH_UNKNOWN_SIZE "--"
-#define PATH_ESCAPED_SPACE ' '
+#define PATH_SEP            "/"
+#define PATH_EXT_SEP        '.'
+#define PATH_DIR_PARENT     ".."
+#define PATH_DIR_CURRENT    "."
+#define PATH_UNKNOWN_SIZE   "--"
+#define PATH_ESCAPED_SPACE  ' '
 
-#define LAYOUT_COMMON_TEXT_FONT_SIZE 26
-#define LAYOUT_COMMON_ITEM_TEXT_P 26
-#define LAYOUT_COMMON_ITEM_ROW_H 32
-#define LAYOUT_COMMON_ITEM_COUNT 14
+#define LAYOUT_COMMON_TEXT_FONT_SIZE    26
+#define LAYOUT_COMMON_ITEM_TEXT_P       26
+#define LAYOUT_COMMON_ITEM_ROW_H        32
+#define LAYOUT_COMMON_ITEM_COUNT        14
 
-#define UI_COLOR_TEXT       0xffffffff
-#define UI_COLOR_MOVABLE    0xff722B72
-#define UI_COLOR_BLOCK      0xff343434
+#define UI_COLOR_TEXT           0xffffffff
+#define UI_COLOR_MOVABLE        0xff722B72
+#define UI_COLOR_BLOCK          0xff343434
 
-#define LAYOUT_MAIN_W VITA_SCREEN_W
-#define LAYOUT_MAIN_H VITA_SCREEN_H
+#define UI_COLOR_ICON_ARROW     0xffffffff
+#define UI_COLOR_ICON_FILE      0xff6aab20
+#define UI_COLOR_ICON_FOLDER    0xff00a5ff
+#define UI_COLOR_ICON_AUDIO     0xff0045ff
+#define UI_COLOR_ICON_VIDEO     0xffee82ee
 
-#define LAYOUT_FRAME_MAIN_PADDING_X 28
-#define LAYOUT_FRAME_MAIN_PADDING_Y 28
+#define LAYOUT_MAIN_W   VITA_SCREEN_W
+#define LAYOUT_MAIN_H   VITA_SCREEN_H
 
-#define LAYOUT_FRAME_ITEMS_PADDING_X 20
-#define LAYOUT_FRAME_ITEMS_H (LAYOUT_COMMON_ITEM_COUNT * LAYOUT_COMMON_ITEM_ROW_H)
-#define LAYOUT_FRAME_ITEMS_L LAYOUT_FRAME_MAIN_PADDING_X
-#define LAYOUT_FRAME_ITEMS_R (LAYOUT_MAIN_W - LAYOUT_FRAME_MAIN_PADDING_X)
-#define LAYOUT_FRAME_ITEMS_B (LAYOUT_MAIN_H - LAYOUT_FRAME_MAIN_PADDING_Y)
-#define LAYOUT_FRAME_ITEMS_T (LAYOUT_FRAME_ITEMS_B - LAYOUT_FRAME_ITEMS_H)
+#define LAYOUT_FRAME_MAIN_PADDING_X     28
+#define LAYOUT_FRAME_MAIN_PADDING_Y     28
 
-#define LAYOUT_FRAME_SCROLL_BAR_MARGIN_L 6
-#define LAYOUT_FRAME_SCROLL_BAR_W 8
-#define LAYOUT_FRAME_SCROLL_BAR_H LAYOUT_FRAME_ITEMS_H
-#define LAYOUT_FRAME_SCROLL_BAR_T LAYOUT_FRAME_ITEMS_T
-#define LAYOUT_FRAME_SCROLL_BAR_L (LAYOUT_FRAME_ITEMS_R - LAYOUT_FRAME_SCROLL_BAR_W)
-#define LAYOUT_FRAME_SCROLL_BAR_R LAYOUT_FRAME_ITEMS_R
-#define LAYOUT_FRAME_SCROLL_BAR_B LAYOUT_FRAME_ITEMS_B
+#define LAYOUT_FRAME_ITEMS_PADDING_X    20
+#define LAYOUT_FRAME_ITEMS_H            (LAYOUT_COMMON_ITEM_COUNT * LAYOUT_COMMON_ITEM_ROW_H)
+#define LAYOUT_FRAME_ITEMS_L            LAYOUT_FRAME_MAIN_PADDING_X
+#define LAYOUT_FRAME_ITEMS_R            (LAYOUT_MAIN_W - LAYOUT_FRAME_MAIN_PADDING_X)
+#define LAYOUT_FRAME_ITEMS_B            (LAYOUT_MAIN_H - LAYOUT_FRAME_MAIN_PADDING_Y)
+#define LAYOUT_FRAME_ITEMS_T            (LAYOUT_FRAME_ITEMS_B - LAYOUT_FRAME_ITEMS_H)
 
-#define LAYOUT_FRAME_TITLE_T (LAYOUT_FRAME_MAIN_PADDING_Y)
+#define LAYOUT_FRAME_SCROLL_BAR_MARGIN_L    6
+#define LAYOUT_FRAME_SCROLL_BAR_W           8
+#define LAYOUT_FRAME_SCROLL_BAR_H           LAYOUT_FRAME_ITEMS_H
+#define LAYOUT_FRAME_SCROLL_BAR_T           LAYOUT_FRAME_ITEMS_T
+#define LAYOUT_FRAME_SCROLL_BAR_L           (LAYOUT_FRAME_ITEMS_R - LAYOUT_FRAME_SCROLL_BAR_W)
+#define LAYOUT_FRAME_SCROLL_BAR_R           LAYOUT_FRAME_ITEMS_R
+#define LAYOUT_FRAME_SCROLL_BAR_B           LAYOUT_FRAME_ITEMS_B
 
-#define LAYOUT_ITEM_SIZE_W 130
-#define LAYOUT_ITEM_DATE_W 260
-#define LAYOUT_ITEM_NAME_W (LAYOUT_MAIN_W \
-                            - LAYOUT_FRAME_MAIN_PADDING_X * 2 \
-                            - LAYOUT_FRAME_ITEMS_PADDING_X * 2 \
-                            - LAYOUT_ITEM_SIZE_W \
-                            - LAYOUT_ITEM_DATE_W)
+#define LAYOUT_FRAME_TITLE_T    (LAYOUT_FRAME_MAIN_PADDING_Y)
+#define LAYOUT_FRAME_TITLE_B    (LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_ROW_H)
 
-#define LAYOUT_ITEM_NAME_L (LAYOUT_FRAME_MAIN_PADDING_X + LAYOUT_FRAME_ITEMS_PADDING_X)
-#define LAYOUT_ITEM_SIZE_L (LAYOUT_ITEM_NAME_L + LAYOUT_ITEM_NAME_W)
-#define LAYOUT_ITEM_DATE_L (LAYOUT_ITEM_SIZE_L + LAYOUT_ITEM_SIZE_W)
+#define LAYOUT_ITEM_SIZE_W  130
+#define LAYOUT_ITEM_DATE_W  260
+#define LAYOUT_ITEM_NAME_W  (LAYOUT_MAIN_W \
+                                - LAYOUT_FRAME_MAIN_PADDING_X * 2 \
+                                - LAYOUT_FRAME_ITEMS_PADDING_X * 2 \
+                                - LAYOUT_ITEM_SIZE_W \
+                                - LAYOUT_ITEM_DATE_W)
 
-#define LAYOUT_ITEM_NAME_CLIP_L LAYOUT_ITEM_NAME_L
-#define LAYOUT_ITEM_NAME_CLIP_R (LAYOUT_ITEM_NAME_L + LAYOUT_ITEM_NAME_W - 20)
+#define LAYOUT_ITEM_NAME_L          (LAYOUT_FRAME_MAIN_PADDING_X + LAYOUT_FRAME_ITEMS_PADDING_X)
+#define LAYOUT_ITEM_SIZE_L          (LAYOUT_ITEM_NAME_L + LAYOUT_ITEM_NAME_W)
+#define LAYOUT_ITEM_DATE_L          (LAYOUT_ITEM_SIZE_L + LAYOUT_ITEM_SIZE_W)
+#define LAYOUT_ITEM_ICON_MARGIN_L   0
 
-#define LAYOUT_CURSOR_L (LAYOUT_FRAME_MAIN_PADDING_X)
-#define LAYOUT_CURSOR_R (LAYOUT_MAIN_W - LAYOUT_CURSOR_L)
-#define LAYOUT_CURSOR_H LAYOUT_COMMON_ITEM_ROW_H
+#define LAYOUT_ITEM_NAME_ICON_W     40
+#define LAYOUT_ITEM_NAME_CLIP_L     LAYOUT_ITEM_NAME_L
+#define LAYOUT_ITEM_NAME_CLIP_R     (LAYOUT_ITEM_NAME_L + LAYOUT_ITEM_NAME_W - 20)
 
-#define UI_STRING_TITLE_NAME "Name"
-#define UI_STRING_TITLE_SIZE "Size"
-#define UI_STRING_TITLE_DATE "Date"
-#define UI_STRING_TITLE_SORT_ASC "\xe2\x96\xb2" // U+25b2
-#define UI_STRING_TITLE_SORT_DESC "\xe2\x96\xbc" // U+25bc
+#define LAYOUT_CURSOR_L     (LAYOUT_FRAME_MAIN_PADDING_X)
+#define LAYOUT_CURSOR_R     (LAYOUT_MAIN_W - LAYOUT_CURSOR_L)
+#define LAYOUT_CURSOR_H     LAYOUT_COMMON_ITEM_ROW_H
+
+#define UI_STRING_TITLE_NAME    "Name"
+#define UI_STRING_TITLE_SIZE    "Size"
+#define UI_STRING_TITLE_DATE    "Date"
 
 #define DPAD_ACT_TRIGGER_DELAY_US   (600 * 1000)
 #define DPAD_ACT_REPEAT_DELAY_US    (40 * 1000)
+
+// https://en.wikipedia.org/wiki/Audio_file_format
+static const char *file_exts_audio[] = {
+    "aac", "amr", "ape", "flac", "m4a",
+    "m4a", "mp3", "ogg", "wav", "wma",
+};
+
+// https://en.wikipedia.org/wiki/Video_file_format
+static const char *file_exts_video[] = {
+    "webm", "mkv", "flv", "f4v", "vob", "avi", "mov", "wmv",
+    "rm", "rmvb", "asf", "mp4", "m4p", "m4v", "mpg", "mp2",
+    "mpeg", "m4v", "3gp",
+};
+
+struct icon_tex_spec {
+    const char *data;
+    int length;
+    ui_color color;
+};
+
+struct icon_tex {
+    struct ui_texture *tex;
+    int width;
+    int height;
+    ui_color color;
+};
+
+enum icon_type {
+    ICON_TYPE_ARROW_DOWNWARD,
+    ICON_TYPE_FOLDER_DEFAULT,
+    ICON_TYPE_FILE_AUDIO,
+    ICON_TYPE_FILE_VIDEO,
+    ICON_TYPE_FILE_DEFAULT,
+    ICON_TYPE_MAX,
+};
+
+static const struct icon_tex_spec icon_tex_spec_list[ICON_TYPE_MAX] = {
+    [ICON_TYPE_ARROW_DOWNWARD] = {
+        .data = icon_arrow_downward,
+        .length = MP_ARRAY_SIZE(icon_arrow_downward),
+        .color = UI_COLOR_ICON_ARROW,
+    },
+    [ICON_TYPE_FOLDER_DEFAULT] = {
+        .data = icon_folder_default,
+        .length = MP_ARRAY_SIZE(icon_folder_default),
+        .color = UI_COLOR_ICON_FOLDER,
+    },
+    [ICON_TYPE_FILE_AUDIO] = {
+        .data = icon_file_audio,
+        .length = MP_ARRAY_SIZE(icon_file_audio),
+        .color = UI_COLOR_ICON_AUDIO,
+    },
+    [ICON_TYPE_FILE_VIDEO] = {
+        .data = icon_file_video,
+        .length = MP_ARRAY_SIZE(icon_file_video),
+        .color = UI_COLOR_ICON_VIDEO,
+    },
+    [ICON_TYPE_FILE_DEFAULT] = {
+        .data = icon_file_default,
+        .length = MP_ARRAY_SIZE(icon_file_default),
+        .color = UI_COLOR_ICON_FILE,
+    },
+};
 
 struct sort_act {
     int field_offset;
@@ -163,6 +251,8 @@ enum path_item_flag {
     PATH_ITEM_FLAG_SANTIZIE_NAME = 1,
     PATH_ITEM_FLAG_TYPE_DIR = 1 << 1,
     PATH_ITEM_FLAG_TYPE_FILE = 1 << 2,
+    PATH_ITEM_FLAG_EXT_AUDIO = 1 << 3,
+    PATH_ITEM_FLAG_EXT_VIDEO = 1 << 4,
 };
 
 struct path_item {
@@ -180,6 +270,7 @@ struct cache_data {
     int path_item_count;
     char *path_str_pool;
     void *tmp_buffer;
+    struct icon_tex icon_textures[ICON_TYPE_MAX];
 };
 
 struct cursor_data {
@@ -195,6 +286,7 @@ struct priv_panel {
 
     int sort_field_idx;
     int sort_field_order;
+    int sort_field_icon_pos[MP_ARRAY_SIZE(field_title_spec_list)];
 
     struct cursor_data *cursor_pos_stack;
     int cursor_pos_count;
@@ -267,13 +359,46 @@ static int format_date_text(struct tm *tm, char *buf, size_t limit)
                     tm->tm_hour, tm->tm_min);
 }
 
+static bool is_in_string_list(const char *cmp, const char **list, int n)
+{
+    for (int i = 0; i < n; ++i) {
+        if (strcmp(cmp, list[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
+static int do_resolve_file_flags(const char *name)
+{
+    int flags = PATH_ITEM_FLAG_TYPE_FILE;
+    const char *p = strrchr(name, PATH_EXT_SEP);
+    if (!p)
+        goto done;
+
+    char ext[6];
+    if (strlen(p) + 1 > MP_ARRAY_SIZE(ext))
+        goto done;
+
+    strcpy(ext, p + 1);
+    for (int i = 0, n = strlen(ext); i < n; ++i)
+        ext[i] = tolower(ext[i]);
+
+    if (is_in_string_list(ext, file_exts_audio, MP_ARRAY_SIZE(file_exts_audio)))
+        flags |= PATH_ITEM_FLAG_EXT_AUDIO;
+    else if (is_in_string_list(ext, file_exts_video, MP_ARRAY_SIZE(file_exts_video)))
+        flags |= PATH_ITEM_FLAG_EXT_VIDEO;
+
+done:
+    return flags;
+}
+
 static int resolve_path_item_flags(const char *name, struct stat *s)
 {
     int flags = 0;
     if (S_ISDIR(s->st_mode))
         flags |= PATH_ITEM_FLAG_TYPE_DIR;
     if (S_ISREG(s->st_mode))
-        flags |= PATH_ITEM_FLAG_TYPE_FILE;
+        flags |= do_resolve_file_flags(name);
     if (sanitize_path_name(name, NULL))
         flags |= PATH_ITEM_FLAG_SANTIZIE_NAME;
     return flags;
@@ -579,6 +704,24 @@ static void pop_path(struct ui_context *ctx)
     ui_panel_common_invalidate(ctx);
 }
 
+static void compute_sort_icon_positions(struct ui_context *ctx)
+{
+    struct ui_font *font = ui_panel_common_get_font(ctx);
+    if (!font)
+        return;
+
+    struct priv_panel *priv = ctx->priv_panel;
+    struct cache_data *cache = &priv->cache_data;
+    for (int i = 0; i < MP_ARRAY_SIZE(field_title_spec_list); ++i) {
+        const struct field_title_spec *spec = &field_title_spec_list[i];
+        int text_w = 0;
+        ui_render_driver_vita.font_measure(ctx, font, spec->draw_name,
+                                           LAYOUT_COMMON_TEXT_FONT_SIZE,
+                                           &text_w, NULL);
+        priv->sort_field_icon_pos[i] = spec->draw_x + text_w + LAYOUT_ITEM_ICON_MARGIN_L;
+    }
+}
+
 static bool files_init(struct ui_context *ctx, void *p)
 {
     struct priv_panel *priv = ctx->priv_panel;
@@ -587,19 +730,47 @@ static bool files_init(struct ui_context *ctx, void *p)
     bstr_xappend(priv, &priv->work_dir, bstr0(init_dir));
     priv->sort_field_idx = 0;
     priv->sort_field_order = 0;
+    compute_sort_icon_positions(ctx);
     return true;
+}
+
+static void init_icon_textures(struct ui_context *ctx)
+{
+    struct priv_panel *priv = ctx->priv_panel;
+    struct cache_data *cache = &priv->cache_data;
+    for (int i = 0; i < ICON_TYPE_MAX; ++i) {
+        struct icon_tex *icon = &cache->icon_textures[i];
+        const struct icon_tex_spec *spec = &icon_tex_spec_list[i];
+        icon->color = spec->color;
+        ui_render_driver_vita.texture_decode(ctx, &icon->tex,
+                                             spec->data, spec->length - 1,
+                                             &icon->width, &icon->height);
+    }
+}
+
+static void free_icon_textures(struct ui_context *ctx)
+{
+    struct priv_panel *priv = ctx->priv_panel;
+    struct cache_data *cache = &priv->cache_data;
+    for (int i = 0; i < ICON_TYPE_MAX; ++i) {
+        struct icon_tex *icon = &cache->icon_textures[i];
+        if (icon->tex)
+            ui_render_driver_vita.texture_uninit(ctx, &icon->tex);
+    }
 }
 
 static void files_on_show(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
     fill_path_items(priv, NULL, false);
+    init_icon_textures(ctx);
 }
 
 static void files_on_hide(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
+    free_icon_textures(ctx);
     TA_FREEP(&cache->tmp_buffer);
     TA_FREEP(&cache->path_str_pool);
     TA_FREEP(&cache->path_items);
@@ -613,6 +784,31 @@ static bool has_scroll_bar(struct ui_context *ctx)
     return (cache->path_item_count > LAYOUT_COMMON_ITEM_COUNT);
 }
 
+
+static void do_draw_icon(struct ui_context *ctx, struct icon_tex *icon,
+                         int left, int center_y, bool vflip)
+{
+    if (!icon->tex)
+        return;
+
+    int top = center_y - icon->height / 2;
+    ui_render_driver_vita.draw_texture(ctx, icon->tex, &(struct ui_texture_draw_args) {
+        .src = &(struct mp_rect) {
+            .x0 = 0,
+            .y0 = vflip ? icon->height : 0,
+            .x1 = icon->width,
+            .y1 = vflip ? 0 : icon->height,
+        },
+        .dst = &(struct mp_rect) {
+            .x0 = left,
+            .y0 = top,
+            .x1 = left + icon->width,
+            .y1 = top + icon->height,
+        },
+        .tint = &icon->color,
+    });
+}
+
 static void do_draw_titles(struct ui_context *ctx)
 {
     struct ui_font *font = ui_panel_common_get_font(ctx);
@@ -621,28 +817,33 @@ static void do_draw_titles(struct ui_context *ctx)
 
     struct priv_panel *priv = ctx->priv_panel;
     struct cache_data *cache = &priv->cache_data;
-    struct ui_font_draw_args args = {
-        .size = LAYOUT_COMMON_TEXT_FONT_SIZE,
-        .color = UI_COLOR_TEXT,
-        .y = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_TEXT_P,
-    };
-
-    char buf[30];
     for (size_t i = 0; i < MP_ARRAY_SIZE(field_title_spec_list); ++i) {
         const struct field_title_spec *spec = &field_title_spec_list[i];
-        if (priv->sort_field_idx == i) {
-            const char *sign = priv->sort_field_order
-                ? UI_STRING_TITLE_SORT_ASC
-                : UI_STRING_TITLE_SORT_DESC;
-            buf[0] = 0;
-            strcat(strcat(buf, spec->draw_name), sign);
-            args.text = buf;
-        } else {
-            args.text = spec->draw_name;
-        }
-        args.x = spec->draw_x;
-        ui_render_driver_vita.draw_font(ctx, font, &args);
+        ui_render_driver_vita.draw_font(ctx, font, &(struct ui_font_draw_args) {
+            .size = LAYOUT_COMMON_TEXT_FONT_SIZE,
+            .color = UI_COLOR_TEXT,
+            .x = spec->draw_x,
+            .y = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_TEXT_P,
+            .text = spec->draw_name,
+        });
     }
+
+    do_draw_icon(ctx, &cache->icon_textures[ICON_TYPE_ARROW_DOWNWARD],
+                 priv->sort_field_icon_pos[priv->sort_field_idx],
+                 (LAYOUT_FRAME_TITLE_T + LAYOUT_FRAME_TITLE_B) / 2,
+                 priv->sort_field_order);
+}
+
+static enum icon_type resolve_path_icon_type(int flags)
+{
+    if (flags & PATH_ITEM_FLAG_TYPE_DIR)
+        return ICON_TYPE_FOLDER_DEFAULT;
+    else if (flags & PATH_ITEM_FLAG_EXT_AUDIO)
+        return ICON_TYPE_FILE_AUDIO;
+    else if (flags & PATH_ITEM_FLAG_EXT_VIDEO)
+        return ICON_TYPE_FILE_VIDEO;
+    else
+        return ICON_TYPE_FILE_DEFAULT;
 }
 
 static void do_draw_content(struct ui_context *ctx,
@@ -662,13 +863,12 @@ static void do_draw_content(struct ui_context *ctx,
     int draw_top = LAYOUT_FRAME_ITEMS_T;
     bool clip_name = (fields & PATH_ITEM_FIELD_NAME);
     if (clip_name) {
-        struct mp_rect rect = {
+        ui_render_driver_vita.clip_start(ctx, &(struct mp_rect) {
             .x0 = LAYOUT_ITEM_NAME_CLIP_L,
             .y0 = draw_top,
             .x1 = LAYOUT_ITEM_NAME_CLIP_R,
             .y1 = LAYOUT_MAIN_H,
-        };
-        ui_render_driver_vita.clip_start(ctx, &rect);
+        });
     }
 
     for (int i = 0; i < LAYOUT_COMMON_ITEM_COUNT; ++i) {
@@ -700,7 +900,11 @@ static void do_draw_content(struct ui_context *ctx,
         args.y = draw_top + LAYOUT_COMMON_ITEM_TEXT_P;
 
         if (fields & PATH_ITEM_FIELD_NAME) {
-            args.x = LAYOUT_ITEM_NAME_L;
+            enum icon_type type = resolve_path_icon_type(item->flags);
+            do_draw_icon(ctx, &cache->icon_textures[type], LAYOUT_ITEM_NAME_L,
+                         draw_top + LAYOUT_COMMON_ITEM_ROW_H / 2, false);
+
+            args.x = LAYOUT_ITEM_NAME_L + LAYOUT_ITEM_NAME_ICON_W;
             args.text = format_name_text(priv, item);
             ui_render_driver_vita.draw_font(ctx, font, &args);
         }
@@ -738,7 +942,7 @@ static void do_draw_shapes(struct ui_context *ctx)
             .x0 = LAYOUT_FRAME_ITEMS_L,
             .y0 = LAYOUT_FRAME_TITLE_T,
             .x1 = LAYOUT_FRAME_ITEMS_R,
-            .y1 = LAYOUT_FRAME_TITLE_T + LAYOUT_COMMON_ITEM_ROW_H,
+            .y1 = LAYOUT_FRAME_TITLE_B,
         }
     };
 
