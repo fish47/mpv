@@ -62,41 +62,53 @@ enum poller_type {
     POLLER_TYPE_TIME,
     POLLER_TYPE_BATTERY,
     POLLER_TYPE_HIDE,
+    POLLER_TYPE_FADE,
     POLLER_TYPE_MAX,
-};
-
-enum poller_action {
-    POLLER_ACTION_REPEAT,
-    POLLER_ACTION_TERMINATE,
 };
 
 typedef void (*poller_update_fn)(struct player_osc_ctx *c, struct ui_context *ctx);
 
 struct poller_spec {
-    enum poller_action action;
+    bool implicit;
     int64_t delay;
+    int64_t period;
+    int64_t duration;
     poller_update_fn callback;
 };
 
 static void do_poll_time(struct player_osc_ctx *c, struct ui_context *ctx);
 static void do_poll_battery(struct player_osc_ctx *c, struct ui_context *ctx);
 static void do_poll_hide(struct player_osc_ctx *c, struct ui_context *ctx);
+static void do_poll_fade(struct player_osc_ctx *c, struct ui_context *ctx);
 
 static const struct poller_spec poller_spec_list[POLLER_TYPE_MAX] = {
     [POLLER_TYPE_TIME] = {
-        .action = POLLER_ACTION_REPEAT,
-        .delay = 60 * 1000000L,
+        .implicit = true,
+        .delay = 0,
+        .period = 60 * 1000000L,
+        .duration = INT64_MAX,
         .callback = do_poll_time,
     },
     [POLLER_TYPE_BATTERY] = {
-        .action = POLLER_ACTION_REPEAT,
-        .delay = 5 * 60 * 1000000L,
+        .implicit = true,
+        .delay = 0,
+        .period = 5 * 60 * 1000000L,
+        .duration = INT64_MAX,
         .callback = do_poll_battery,
     },
     [POLLER_TYPE_HIDE] = {
-        .action = POLLER_ACTION_TERMINATE,
-        .delay = 1500 * 1000L,
+        .implicit = false,
+        .delay = 1000 * 1000L,
+        .period = 0,
+        .duration = 0,
         .callback = do_poll_hide,
+    },
+    [POLLER_TYPE_FADE] = {
+        .implicit = false,
+        .delay = 0,
+        .period = 0,
+        .duration = 500 * 1000L,
+        .callback = do_poll_fade,
     },
 };
 
@@ -108,7 +120,7 @@ struct key_callback_args {
 };
 
 struct player_osc_ctx {
-    bool show_osc;
+    float osc_alpha;
     int pause_state;
     struct key_helper_ctx key_ctx;
 
@@ -119,44 +131,67 @@ struct player_osc_ctx {
     int battery_percent;
 
     int64_t poller_schedule_times[POLLER_TYPE_MAX];
-    int64_t poller_trigger_time;
+    int64_t poller_trigger_times[POLLER_TYPE_MAX];
+    int64_t poller_min_trigger_time;
 };
 
-static void poller_run(struct player_osc_ctx *c, struct ui_context *ctx, bool force)
-{
-    int64_t current = ui_panel_common_get_frame_time(ctx);
-    if (!force && c->poller_trigger_time > current)
-        return;
-
-    bool stop = false;
-    int64_t next_time = INT64_MAX;
-    for (int i = 0; i < POLLER_TYPE_MAX; ++i) {
-        if (c->poller_schedule_times[i] < current) {
-            int64_t next_time = INT64_MAX;
-            const struct poller_spec *spec = &poller_spec_list[i];
-            spec->callback(c, ctx);
-            switch (spec->action) {
-            case POLLER_ACTION_REPEAT:
-                next_time = current + spec->delay;
-                break;
-            case POLLER_ACTION_TERMINATE:
-                stop = true;
-                break;
-            }
-            c->poller_schedule_times[i] = next_time;
-        }
-        next_time = MPMIN(next_time, c->poller_schedule_times[i]);
-    }
-
-    c->poller_trigger_time = stop ? INT64_MAX : next_time;
-}
 
 static void poller_schedule(struct player_osc_ctx *c, struct ui_context *ctx, enum poller_type type)
 {
     const struct poller_spec *spec = &poller_spec_list[type];
-    int64_t next_time = ui_panel_common_get_frame_time(ctx) + spec->delay;
-    c->poller_schedule_times[type] = next_time;
-    c->poller_trigger_time = MPMIN(c->poller_trigger_time, next_time);
+    int64_t now = ui_panel_common_get_frame_time(ctx);
+    int64_t trigger = now + spec->delay;
+    c->poller_schedule_times[type] = now;
+    c->poller_trigger_times[type] = trigger;
+    c->poller_min_trigger_time = MPMIN(c->poller_min_trigger_time, trigger);
+}
+
+static void poller_stop(struct player_osc_ctx *c, enum poller_type type)
+{
+    c->poller_schedule_times[type] = 0;
+    c->poller_trigger_times[type] = INT64_MAX;
+}
+
+static void poller_run(struct player_osc_ctx *c, struct ui_context *ctx)
+{
+    int64_t now = ui_panel_common_get_frame_time(ctx);
+    if (c->poller_min_trigger_time > now)
+        return;
+
+    bool stop = false;
+    int64_t min_time = INT64_MAX;
+    for (int i = 0; i < POLLER_TYPE_MAX; ++i) {
+        const struct poller_spec *spec = &poller_spec_list[i];
+
+        // schedule implicit pollers at the first time
+        if (!c->poller_schedule_times[i]) {
+            if (!spec->implicit)
+                continue;
+            poller_schedule(c, ctx, i);
+        }
+
+        // execute pending pollers
+        if (c->poller_trigger_times[i] < now) {
+            spec->callback(c, ctx);
+
+            // finish the poller exceeding its duration
+            if (spec->duration != INT64_MAX) {
+                int64_t end = c->poller_schedule_times[i] + spec->duration;
+                if (now > end) {
+                    c->poller_schedule_times[i] = 0;
+                    continue;
+                }
+            }
+
+            // pollers may not be guarenteed to be executed for every period
+            if (spec->period) {
+                int64_t delta = now - c->poller_trigger_times[i];
+                c->poller_trigger_times[i] += (delta + spec->period) / spec->period * spec->period;
+            }
+        }
+        min_time = stop ? INT64_MAX : MPMIN(min_time, c->poller_trigger_times[i]);
+    }
+    c->poller_min_trigger_time = min_time;
 }
 
 static void do_poll_time(struct player_osc_ctx *c, struct ui_context *ctx)
@@ -188,7 +223,15 @@ static void do_poll_battery(struct player_osc_ctx *c, struct ui_context *ctx)
 
 static void do_poll_hide(struct player_osc_ctx *c, struct ui_context *ctx)
 {
-    c->show_osc = false;
+    poller_schedule(c, ctx, POLLER_TYPE_FADE);
+}
+
+static void do_poll_fade(struct player_osc_ctx *c, struct ui_context *ctx)
+{
+    const struct poller_spec *spec = &poller_spec_list[POLLER_TYPE_FADE];
+    int64_t now = ui_panel_common_get_frame_time(ctx);
+    int64_t delta = now - c->poller_schedule_times[POLLER_TYPE_FADE];
+    c->osc_alpha = MPMAX(1.0 - (float) delta / spec->duration, 0);
     ui_panel_common_invalidate(ctx);
 }
 
@@ -227,13 +270,14 @@ void player_osc_setup(struct player_osc_ctx *c, struct mpv_handle *mpv, struct M
 
 void do_show_osc(struct player_osc_ctx *c, struct ui_context *ctx, bool delayed_hide)
 {
-    // if osc is hidden, data fields will not be updated anymore,
-    // so a forced refresh is necessary before showing osc.
-    if (!c->show_osc) {
-        c->show_osc = true;
-        poller_run(c, ctx, true);
+    // the osc may be hidden or fading
+    if (c->osc_alpha < 1) {
+        c->osc_alpha = 1;
         ui_panel_common_invalidate(ctx);
     }
+
+    if (c->poller_schedule_times[POLLER_TYPE_FADE])
+        poller_stop(c, POLLER_TYPE_FADE);
 
     if (delayed_hide)
         poller_schedule(c, ctx, POLLER_TYPE_HIDE);
@@ -282,6 +326,12 @@ void player_osc_on_event(struct player_osc_ctx *c, struct ui_context *ctx, struc
         do_show_osc(c, ctx, true);
 }
 
+static ui_color compute_translucent_color(float alpha, ui_color color)
+{
+    ui_color alpha_channel = ((ui_color) ((color >> 24) * alpha)) & 0xff;
+    return (color & ~(0xff << 24)) | (alpha_channel << 24);
+}
+
 static void do_draw_overlay_top(struct player_osc_ctx *c, struct ui_context *ctx)
 {
     struct ui_font *font = ui_panel_common_get_font(ctx);
@@ -294,7 +344,7 @@ static void do_draw_overlay_top(struct player_osc_ctx *c, struct ui_context *ctx
             .size = LAYOUT_TOP_BASE_FONT_SIZE,
             .x = LAYOUT_TOP_BASE_MARGIN_X,
             .y = LAYOUT_TOP_BASE_TEXT_P,
-            .color = UI_COLOR_BASE_TEXT,
+            .color = compute_translucent_color(c->osc_alpha, UI_COLOR_BASE_TEXT),
         });
     }
 
@@ -303,7 +353,7 @@ static void do_draw_overlay_top(struct player_osc_ctx *c, struct ui_context *ctx
         .size = LAYOUT_TOP_BASE_FONT_SIZE,
         .x = LAYOUT_TOP_BATTERY_L,
         .y = LAYOUT_TOP_BASE_TEXT_P,
-        .color = UI_COLOR_BASE_TEXT,
+        .color = compute_translucent_color(c->osc_alpha, UI_COLOR_BASE_TEXT),
     });
 
     ui_render_driver_vita.draw_font(ctx, font, &(struct ui_font_draw_args) {
@@ -311,7 +361,7 @@ static void do_draw_overlay_top(struct player_osc_ctx *c, struct ui_context *ctx
         .size = LAYOUT_TOP_BASE_FONT_SIZE,
         .x = LAYOUT_TOP_TIME_L,
         .y = LAYOUT_TOP_BASE_TEXT_P,
-        .color = UI_COLOR_BASE_TEXT,
+        .color = compute_translucent_color(c->osc_alpha, UI_COLOR_BASE_TEXT),
     });
 
 }
@@ -324,7 +374,7 @@ static void do_draw_shapes(struct player_osc_ctx *c, struct ui_context *ctx)
     // top overlay
     items[count++] = (struct shape_draw_item) {
         .type = SHAPE_DRAW_TYPE_RECT_FILL,
-        .color = UI_COLOR_OVERLAY,
+        .color = compute_translucent_color(c->osc_alpha, UI_COLOR_OVERLAY),
         .shape.rect = {
             .x0 = 0,
             .y0 = 0,
@@ -336,7 +386,7 @@ static void do_draw_shapes(struct player_osc_ctx *c, struct ui_context *ctx)
     // bottom overlay
     items[count++] = (struct shape_draw_item) {
         .type = SHAPE_DRAW_TYPE_RECT_FILL,
-        .color = UI_COLOR_OVERLAY,
+        .color = compute_translucent_color(c->osc_alpha, UI_COLOR_OVERLAY),
         .shape.rect = {
             .x0 = 0,
             .y0 = LAYOUT_OVERLAY_BOTTOM_T,
@@ -348,7 +398,7 @@ static void do_draw_shapes(struct player_osc_ctx *c, struct ui_context *ctx)
     // progress frame
     items[count++] = (struct shape_draw_item) {
         .type = SHAPE_DRAW_TYPE_RECT_LINE,
-        .color = UI_COLOR_PROGRESS_FRAME,
+        .color = compute_translucent_color(c->osc_alpha, UI_COLOR_PROGRESS_FRAME),
         .line = LAYOUT_PROGRESS_FRAME_LINE_W,
         .shape.rect = {
             .x0 = LAYOUT_PROGRESS_FRAME_L,
@@ -361,7 +411,7 @@ static void do_draw_shapes(struct player_osc_ctx *c, struct ui_context *ctx)
     // progress bar
     items[count++] = (struct shape_draw_item) {
         .type = SHAPE_DRAW_TYPE_RECT_FILL,
-        .color = UI_COLOR_PROGRESS_BAR,
+        .color = compute_translucent_color(c->osc_alpha, UI_COLOR_PROGRESS_BAR),
         .shape.rect = {
             .x0 = LAYOUT_PROGRESS_BAR_L,
             .y0 = LAYOUT_PROGRESS_BAR_T,
@@ -375,7 +425,7 @@ static void do_draw_shapes(struct player_osc_ctx *c, struct ui_context *ctx)
 
 void player_osc_on_draw(struct player_osc_ctx *c, struct ui_context *ctx)
 {
-    if (!c->show_osc)
+    if (c->osc_alpha <= 0)
         return;
 
     do_draw_shapes(c, ctx);
@@ -386,7 +436,7 @@ void player_osc_on_poll(struct player_osc_ctx *c, struct ui_context *ctx,
                         struct mpv_handle *mpv, struct MPContext *mpc)
 {
     int64_t time = ui_panel_common_get_frame_time(ctx);
-    poller_run(c, ctx, false);
+    poller_run(c, ctx);
     key_helper_poll(&c->key_ctx, time, &(struct key_callback_args) {
         .osc = c,
         .ctx = ctx,
