@@ -17,13 +17,15 @@
 
 #define LAYOUT_OVERLAY_TOP_H            40
 
+#define LAYOUT_TOP_BASE_T               0
+#define LAYOUT_TOP_BASE_B               (LAYOUT_TOP_BASE_T + LAYOUT_OVERLAY_TOP_H)
 #define LAYOUT_TOP_BASE_MARGIN_X        20
 #define LAYOUT_TOP_BASE_TEXT_P          28
 #define LAYOUT_TOP_BASE_FONT_SIZE       20
 
 #define LAYOUT_TOP_TITLE_L              LAYOUT_TOP_BASE_MARGIN_X
-#define LAYOUT_TOP_TITLE_MAX_GLYPHS     35
-#define LAYOUT_TOP_TIME_L               810
+#define LAYOUT_TOP_TITLE_R              800
+#define LAYOUT_TOP_TIME_L               820
 #define LAYOUT_TOP_BATTERY_L            890
 
 #define LAYOUT_OVERLAY_BOTTOM_H         90
@@ -235,26 +237,6 @@ static void do_poll_fade(struct player_osc_ctx *c, struct ui_context *ctx)
     ui_panel_common_invalidate(ctx);
 }
 
-static bool ellipsize_bstr(bstr *str, int max_count)
-{
-    int idx = 0;
-    int count = 0;
-    while (count < max_count) {
-        unsigned char b = str->start[idx];
-        if (!b)
-            return false;
-
-        int len = bstr_parse_utf8_code_length(b);
-        if (len < 1)
-            break;
-
-        idx += len;
-        ++count;
-    }
-    str->len = idx + 1;
-    return true;
-}
-
 struct player_osc_ctx *player_osc_create_ctx(void *parent)
 {
     return ta_zalloc_size(parent, sizeof(struct player_osc_ctx));
@@ -305,12 +287,8 @@ static void do_handle_props(struct player_osc_ctx *c, struct ui_context *ctx, mp
         c->progress_bar_width = new_width;
     } else if (strcmp(prop->name, "media-title") == 0) {
         const char **str = prop->data;
-        bstr title = bstr0(*str);
-        bool cut = ellipsize_bstr(&title, LAYOUT_TOP_TITLE_MAX_GLYPHS);
         c->media_title.len = 0;
-        bstr_xappend(c, &c->media_title, title);
-        if (cut)
-            bstr_xappend(c, &c->media_title, bstr0("..."));
+        bstr_xappend(c, &c->media_title, bstr0(*str));
         redraw = true;
     }
 
@@ -339,13 +317,20 @@ static void do_draw_overlay_top(struct player_osc_ctx *c, struct ui_context *ctx
         return;
 
     if (c->media_title.len) {
+        ui_render_driver_vita.clip_start(ctx, &(struct mp_rect) {
+            .x0 = LAYOUT_TOP_TITLE_L,
+            .y0 = LAYOUT_TOP_BASE_T,
+            .x1 = LAYOUT_TOP_TITLE_R,
+            .y1 = LAYOUT_TOP_BASE_B,
+        });
         ui_render_driver_vita.draw_font(ctx, font, &(struct ui_font_draw_args) {
             .text = BSTR_CAST(c->media_title),
             .size = LAYOUT_TOP_BASE_FONT_SIZE,
-            .x = LAYOUT_TOP_BASE_MARGIN_X,
+            .x = LAYOUT_TOP_TITLE_L,
             .y = LAYOUT_TOP_BASE_TEXT_P,
             .color = compute_translucent_color(c->osc_alpha, UI_COLOR_BASE_TEXT),
         });
+        ui_render_driver_vita.clip_end(ctx);
     }
 
     ui_render_driver_vita.draw_font(ctx, font, &(struct ui_font_draw_args) {
