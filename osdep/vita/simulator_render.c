@@ -1,4 +1,4 @@
-#include "emulator.h"
+#include "simulator.h"
 #include "ui_device.h"
 #include "ui_driver.h"
 #include "shape_draw.h"
@@ -539,7 +539,7 @@ static void render_render_end(struct ui_context *ctx)
     struct priv_render *priv = ctx->priv_render;
     font_cache_free_all(&priv->font_cache_old);
 
-    glfwSwapBuffers(emulator_get_platform_data(ctx)->window);
+    glfwSwapBuffers(simulator_get_platform_data(ctx)->window);
 }
 
 static int render_dr_align(enum ui_texure_fmt fmt, int *w, int *h)
@@ -554,7 +554,7 @@ static int render_dr_align(enum ui_texure_fmt fmt, int *w, int *h)
 static bool render_dr_prepare(struct ui_context *ctx,
                               const AVCodec *codec, AVDictionary **opts)
 {
-    return emulator_get_platform_data(ctx)->enable_dr;
+    return simulator_get_platform_data(ctx)->enable_dr;
 }
 
 static struct vram_header *get_vram_header(void *vram)
@@ -1167,8 +1167,8 @@ static FT_Glyph find_glyph(struct ui_context *ctx,
 
     int best_idx = 0;
     char *best_font = NULL;
-    struct emulator_platform_data *data = emulator_get_platform_data(ctx);
-    emulator_fontconfig_select(data->fontconfig, codepoint, &best_font, &best_idx);
+    struct simulator_platform_data *data = simulator_get_platform_data(ctx);
+    simulator_fontconfig_select(data->fontconfig, codepoint, &best_font, &best_idx);
     if (best_font) {
         // take the ownership of path string
         do_append_ft_font_data(priv, font, best_font, best_idx, &font_data);

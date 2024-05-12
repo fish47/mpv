@@ -1,4 +1,4 @@
-#include "emulator.h"
+#include "simulator.h"
 
 #include "ta/ta.h"
 #include <fontconfig/fontconfig.h>
@@ -14,7 +14,7 @@ static void do_destroy_priv(void *p)
         FcConfigDestroy(priv->config);
 }
 
-void emulator_fontconfig_init(void *parent, void **fc)
+void simulator_fontconfig_init(void *parent, void **fc)
 {
     struct fontconfig_priv *priv = ta_new_ptrtype(parent, priv);
     ta_set_destructor(priv, do_destroy_priv);
@@ -22,7 +22,7 @@ void emulator_fontconfig_init(void *parent, void **fc)
     *fc = priv;
 }
 
-bool emulator_fontconfig_select(void *fc, int codepoint, char **best_path, int *best_idx)
+bool simulator_fontconfig_select(void *fc, int codepoint, char **best_path, int *best_idx)
 {
     FcPattern *pattern = NULL;
     FcCharSet *charset = NULL;

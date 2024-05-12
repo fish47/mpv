@@ -21,7 +21,7 @@ struct audio_context {
     int free_count;
 };
 
-static bool emulator_audio_init(void **ctx, int samples, int freq, int channels)
+static bool simulator_audio_init(void **ctx, int samples, int freq, int channels)
 {
     struct audio_context *out = ta_new_ptrtype(NULL, out);
     ALCdevice *device = alcOpenDevice(NULL);
@@ -70,7 +70,7 @@ static void wait_buffers(struct audio_context *ctx, int count)
     }
 }
 
-static void emulator_audio_uninit(void **ctx)
+static void simulator_audio_uninit(void **ctx)
 {
     struct audio_context *context = *ctx;
     alSourceRewind(context->source);
@@ -86,7 +86,7 @@ static void emulator_audio_uninit(void **ctx)
     TA_FREEP(ctx);
 }
 
-static int emulator_audio_output(void *ctx, void *buff)
+static int simulator_audio_output(void *ctx, void *buff)
 {
     struct audio_context *context = ctx;
     if (!buff) {
@@ -122,7 +122,7 @@ static int emulator_audio_output(void *ctx, void *buff)
 
 const struct ui_audio_driver ui_audio_driver_vita = {
     .buffer_count = BUFFER_COUNT,
-    .init = emulator_audio_init,
-    .uninit = emulator_audio_uninit,
-    .output = emulator_audio_output,
+    .init = simulator_audio_init,
+    .uninit = simulator_audio_uninit,
+    .output = simulator_audio_output,
 };

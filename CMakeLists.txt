@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.0)
 
-option(MPV_BUILD_EMULATOR "Build project for desktop to ease debugging" FALSE)
+option(MPV_BUILD_SIMULATOR "Build PC simulator to ease debugging" FALSE)
 set(MPV_FFMPEG_LIBS_DIR "" CACHE STRING "Specfiy FFMPEG static library directory")
 
 set(mpv_vita_title_id "MPV000001")
@@ -8,7 +8,7 @@ set(mpv_vita_name "mpv-vita")
 set(mpv_vita_version "01.00")
 
 # apply vitasdk toolchain setup
-if(NOT MPV_BUILD_EMULATOR)
+if(NOT MPV_BUILD_SIMULATOR)
     if(NOT DEFINED ENV{VITASDK})
         message(FATAL_ERROR "Please define VITASDK to point to your SDK path!")
     endif()
@@ -386,9 +386,9 @@ list(APPEND mpv_src_files
     osdep/vita/key_helper.c
 )
 
-set(_emulator_flag 0)
-if(MPV_BUILD_EMULATOR)
-    set(_emulator_flag 1)
+set(_simulator_flag 0)
+if(MPV_BUILD_SIMULATOR)
+    set(_simulator_flag 1)
 endif()
 
 # config file content
@@ -398,7 +398,7 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/config.h "\
 #define HAVE_VITA               1
 #define HAVE_ZLIB               1
 #define HAVE_STDATOMIC          1
-#define HAVE_TA_LEAK_REPORT     ${_emulator_flag}
+#define HAVE_TA_LEAK_REPORT     ${_simulator_flag}
 #define MPV_VITA_TITLE_ID       \"${mpv_vita_title_id}\"
 ")
 
@@ -501,17 +501,17 @@ else()
 
     if(${_pkg_fontconfig_FOUND})
         list(APPEND mpv_src_files
-            osdep/vita/emulator_fontconfig_unix.c)
+            osdep/vita/simulator_fontconfig_unix.c)
     else()
         list(APPEND mpv_src_files
-            osdep/vita/emulator_fontconfig_fallback.c)
+            osdep/vita/simulator_fontconfig_fallback.c)
     endif()
 
     list(APPEND mpv_src_files
-        osdep/vita/emulator.h
-        osdep/vita/emulator_audio.c
-        osdep/vita/emulator_render.c
-        osdep/vita/emulator_platform.c)
+        osdep/vita/simulator.h
+        osdep/vita/simulator_audio.c
+        osdep/vita/simulator_render.c
+        osdep/vita/simulator_platform.c)
 
     list(APPEND mpv_inc_dirs
         ${OPENAL_INCLUDE_DIR}

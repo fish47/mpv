@@ -1,7 +1,7 @@
 #include "ui_driver.h"
 #include "ui_device.h"
 #include "ui_panel.h"
-#include "emulator.h"
+#include "simulator.h"
 #include "ta/ta.h"
 
 #include <stdlib.h>
@@ -54,7 +54,7 @@ struct cmd_option {
 };
 
 struct priv_platform {
-    struct emulator_platform_data platform_data;
+    struct simulator_platform_data platform_data;
     const char *files_dir;
 
     const key_map_item_ext *key_map_ext;
@@ -178,7 +178,7 @@ static bool parse_options(struct priv_platform *priv, int argc, char *argv[])
         { "files-dir", CMD_OPTION_TYPE_DIR, true, &priv->files_dir },
     };
 
-    if (!emulator_fontconfig_select(priv->platform_data.fontconfig, 0, NULL, NULL)) {
+    if (!simulator_fontconfig_select(priv->platform_data.fontconfig, 0, NULL, NULL)) {
         cmd_options[cmd_count++] = (struct cmd_option) {
             "font-path", CMD_OPTION_TYPE_FILE, true, &priv->platform_data.fallback_font
         };
@@ -280,7 +280,7 @@ static bool platform_init(struct ui_context *ctx, int argc, char *argv[])
         return false;
 
     bool need_fallback = false;
-    emulator_fontconfig_init(priv, &priv->platform_data.fontconfig);
+    simulator_fontconfig_init(priv, &priv->platform_data.fontconfig);
     if (!parse_options(priv, argc, argv))
         return false;
 
@@ -337,7 +337,7 @@ const struct ui_platform_driver ui_platform_driver_vita = {
     .get_battery_level = platform_get_battery_level,
 };
 
-struct emulator_platform_data *emulator_get_platform_data(struct ui_context *ctx)
+struct simulator_platform_data *simulator_get_platform_data(struct ui_context *ctx)
 {
     return &get_priv_platform(ctx)->platform_data;
 }
