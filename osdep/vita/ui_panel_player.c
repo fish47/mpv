@@ -65,7 +65,7 @@ static bool player_init(struct ui_context *ctx, void *p)
     if (mpv_initialize(priv->mpv_handle) != 0)
         return false;
 
-    player_osc_setup(priv->osc_ctx, priv->mpv_handle, priv->mpv_ctx);
+    player_osc_setup(priv->osc_ctx, ctx, priv->mpv_handle, priv->mpv_ctx);
     if (p) {
         struct ui_panel_player_init_params *params = p;
         if (params->enable_perf)
@@ -80,6 +80,7 @@ static bool player_init(struct ui_context *ctx, void *p)
 static void player_uninit(struct ui_context *ctx)
 {
     struct priv_panel *priv = ctx->priv_panel;
+    player_osc_clear(priv->osc_ctx, ctx);
     if (priv->perf_ctx)
         player_perf_stop(priv->perf_ctx, ctx);
 }

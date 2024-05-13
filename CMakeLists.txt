@@ -411,6 +411,7 @@ list(APPEND _mpv_icons
     file_video.png
     file_default.png
     folder_default.png
+    battery_frame.png
 )
 foreach(_icon ${_mpv_icons})
     _generate_source(mpv_gen_files

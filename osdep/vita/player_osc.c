@@ -10,23 +10,32 @@
 
 #include <time.h>
 
+static const char icon_battery_frame[] =
+#include "generated/etc/vita/icons/battery_frame.png.inc"
+;
+
 #define UI_COLOR_OVERLAY            0xbf000000
 #define UI_COLOR_BASE_TEXT          0xffffffff
+#define UI_COLOR_BASE_ICON          0xffffffff
+#define UI_COLOR_BATTERY_BAR        0xff00ff00
 #define UI_COLOR_PROGRESS_BAR       0xff722B72
 #define UI_COLOR_PROGRESS_FRAME     0xbfffffff
 
-#define LAYOUT_OVERLAY_TOP_H            40
-
+#define LAYOUT_TOP_BASE_H               40
 #define LAYOUT_TOP_BASE_T               0
-#define LAYOUT_TOP_BASE_B               (LAYOUT_TOP_BASE_T + LAYOUT_OVERLAY_TOP_H)
+#define LAYOUT_TOP_BASE_B               (LAYOUT_TOP_BASE_T + LAYOUT_TOP_BASE_H)
 #define LAYOUT_TOP_BASE_MARGIN_X        20
 #define LAYOUT_TOP_BASE_TEXT_P          28
 #define LAYOUT_TOP_BASE_FONT_SIZE       20
 
-#define LAYOUT_TOP_TITLE_L              LAYOUT_TOP_BASE_MARGIN_X
-#define LAYOUT_TOP_TITLE_R              800
-#define LAYOUT_TOP_TIME_L               820
-#define LAYOUT_TOP_BATTERY_L            890
+#define LAYOUT_TOP_TITLE_L                  LAYOUT_TOP_BASE_MARGIN_X
+#define LAYOUT_TOP_TITLE_R                  800
+#define LAYOUT_TOP_TIME_L                   820
+#define LAYOUT_TOP_BATTERY_FRAME_R          (VITA_SCREEN_W - LAYOUT_TOP_BASE_MARGIN_X + 3)
+#define LAYOUT_TOP_BATTERY_BAR_PADDING_L    9
+#define LAYOUT_TOP_BATTERY_BAR_PADDING_T    13
+#define LAYOUT_TOP_BATTERY_BAR_PADDING_R    6
+#define LAYOUT_TOP_BATTERY_BAR_PADDING_B    13
 
 #define LAYOUT_OVERLAY_BOTTOM_H         90
 #define LAYOUT_OVERLAY_BOTTOM_T         (VITA_SCREEN_H - LAYOUT_OVERLAY_BOTTOM_H)
@@ -129,7 +138,10 @@ struct player_osc_ctx {
     bstr media_title;
     int progress_bar_width;
     char time_text[8];
-    char battery_text[6];
+
+    struct ui_texture *battery_frame_tex;
+    int battery_frame_w;
+    int battery_frame_h;
     int battery_percent;
 
     int64_t poller_schedule_times[POLLER_TYPE_MAX];
@@ -219,7 +231,6 @@ static void do_poll_battery(struct player_osc_ctx *c, struct ui_context *ctx)
         return;
 
     c->battery_percent = percent;
-    snprintf(c->battery_text, sizeof(c->battery_text), "%d%%", percent);
     ui_panel_common_invalidate(ctx);
 }
 
@@ -242,12 +253,23 @@ struct player_osc_ctx *player_osc_create_ctx(void *parent)
     return ta_zalloc_size(parent, sizeof(struct player_osc_ctx));
 }
 
-void player_osc_setup(struct player_osc_ctx *c, struct mpv_handle *mpv, struct MPContext *mpc)
+void player_osc_setup(struct player_osc_ctx *c, struct ui_context *ctx,
+                      struct mpv_handle *mpv, struct MPContext *mpc)
 {
     mpv_observe_property(mpv, 0, "pause", MPV_FORMAT_FLAG);
     mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv, 0, "percent-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv, 0, "media-title", MPV_FORMAT_STRING);
+
+    ui_render_driver_vita.texture_decode(ctx, &c->battery_frame_tex, icon_battery_frame,
+                                         MP_ARRAY_SIZE(icon_battery_frame) - 1,
+                                         &c->battery_frame_w, &c->battery_frame_h);
+}
+
+void player_osc_clear(struct player_osc_ctx *c, struct ui_context *ctx)
+{
+    if (c->battery_frame_tex)
+        ui_render_driver_vita.texture_uninit(ctx, &c->battery_frame_tex);
 }
 
 void do_show_osc(struct player_osc_ctx *c, struct ui_context *ctx, bool delayed_hide)
@@ -310,7 +332,7 @@ static ui_color compute_translucent_color(float alpha, ui_color color)
     return (color & ~(0xff << 24)) | (alpha_channel << 24);
 }
 
-static void do_draw_overlay_top(struct player_osc_ctx *c, struct ui_context *ctx)
+static void do_draw_top_strings(struct player_osc_ctx *c, struct ui_context *ctx)
 {
     struct ui_font *font = ui_panel_common_get_font(ctx);
     if (!font)
@@ -334,27 +356,40 @@ static void do_draw_overlay_top(struct player_osc_ctx *c, struct ui_context *ctx
     }
 
     ui_render_driver_vita.draw_font(ctx, font, &(struct ui_font_draw_args) {
-        .text = c->battery_text,
-        .size = LAYOUT_TOP_BASE_FONT_SIZE,
-        .x = LAYOUT_TOP_BATTERY_L,
-        .y = LAYOUT_TOP_BASE_TEXT_P,
-        .color = compute_translucent_color(c->osc_alpha, UI_COLOR_BASE_TEXT),
-    });
-
-    ui_render_driver_vita.draw_font(ctx, font, &(struct ui_font_draw_args) {
         .text = c->time_text,
         .size = LAYOUT_TOP_BASE_FONT_SIZE,
         .x = LAYOUT_TOP_TIME_L,
         .y = LAYOUT_TOP_BASE_TEXT_P,
         .color = compute_translucent_color(c->osc_alpha, UI_COLOR_BASE_TEXT),
     });
+}
 
+static void do_calc_battery_frame_rect(struct player_osc_ctx *c, struct mp_rect *rect)
+{
+    rect->x0 = LAYOUT_TOP_BATTERY_FRAME_R - c->battery_frame_w;
+    rect->y0 = LAYOUT_TOP_BASE_T + (LAYOUT_TOP_BASE_H - c->battery_frame_h) / 2;
+    rect->x1 = rect->x0 + c->battery_frame_w;
+    rect->y1 = rect->y0 + c->battery_frame_h;
+}
+
+static void do_draw_top_battery_frame(struct player_osc_ctx *c, struct ui_context *ctx)
+{
+    if (!c->battery_frame_tex)
+        return;
+
+    struct mp_rect frame;
+    do_calc_battery_frame_rect(c, &frame);
+    ui_render_driver_vita.draw_texture(ctx, c->battery_frame_tex, &(struct ui_texture_draw_args) {
+        .src = NULL,
+        .dst = &frame,
+        .tint = &(ui_color) { compute_translucent_color(c->osc_alpha, UI_COLOR_BASE_ICON) },
+    });
 }
 
 static void do_draw_shapes(struct player_osc_ctx *c, struct ui_context *ctx)
 {
     int count = 0;
-    struct shape_draw_item items[4];
+    struct shape_draw_item items[5];
 
     // top overlay
     items[count++] = (struct shape_draw_item) {
@@ -364,7 +399,7 @@ static void do_draw_shapes(struct player_osc_ctx *c, struct ui_context *ctx)
             .x0 = 0,
             .y0 = 0,
             .x1 = VITA_SCREEN_W,
-            .y1 = LAYOUT_OVERLAY_TOP_H,
+            .y1 = LAYOUT_TOP_BASE_H,
         }
     };
 
@@ -405,6 +440,27 @@ static void do_draw_shapes(struct player_osc_ctx *c, struct ui_context *ctx)
         },
     };
 
+    // battery bar
+    if (c->battery_frame_tex) {
+        struct mp_rect bar;
+        do_calc_battery_frame_rect(c, &bar);
+        bar.x0 += LAYOUT_TOP_BATTERY_BAR_PADDING_L;
+        bar.y0 += LAYOUT_TOP_BATTERY_BAR_PADDING_T;
+        bar.x1 -= LAYOUT_TOP_BATTERY_BAR_PADDING_R;
+        bar.y1 -= LAYOUT_TOP_BATTERY_BAR_PADDING_B;
+        bar.x0 += mp_rect_w(bar) * (100 - c->battery_percent) / 100;
+        items[count++] = (struct shape_draw_item) {
+            .type = SHAPE_DRAW_TYPE_RECT_FILL,
+            .color = compute_translucent_color(c->osc_alpha, UI_COLOR_BATTERY_BAR),
+            .shape.rect = {
+                .x0 = bar.x0,
+                .y0 = bar.y0,
+                .x1 = bar.x1,
+                .y1 = bar.y1,
+            },
+        };
+    }
+
     shape_draw_commit(ctx, items, count);
 }
 
@@ -414,7 +470,8 @@ void player_osc_on_draw(struct player_osc_ctx *c, struct ui_context *ctx)
         return;
 
     do_draw_shapes(c, ctx);
-    do_draw_overlay_top(c, ctx);
+    do_draw_top_strings(c, ctx);
+    do_draw_top_battery_frame(c, ctx);
 }
 
 void player_osc_on_poll(struct player_osc_ctx *c, struct ui_context *ctx,

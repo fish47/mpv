@@ -11,7 +11,10 @@ struct MPContext;
 
 struct player_osc_ctx *player_osc_create_ctx(void *parent);
 
-void player_osc_setup(struct player_osc_ctx *c, struct mpv_handle *mpv, struct MPContext *mpc);
+void player_osc_clear(struct player_osc_ctx *c, struct ui_context *ctx);
+
+void player_osc_setup(struct player_osc_ctx *c, struct ui_context *ctx,
+                      struct mpv_handle *mpv, struct MPContext *mpc);
 
 void player_osc_on_draw(struct player_osc_ctx *c, struct ui_context *ctx);
 
